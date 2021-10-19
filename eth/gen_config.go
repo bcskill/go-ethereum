@@ -46,6 +46,7 @@ func (c Config) MarshalTOML() (interface{}, error) {
 		DocRoot                 string `toml:"-"`
 		EWASMInterpreter        string
 		EVMInterpreter          string
+		GossipInterval          int
 	}
 	var enc Config
 	enc.Genesis = c.Genesis
@@ -75,6 +76,7 @@ func (c Config) MarshalTOML() (interface{}, error) {
 	enc.DocRoot = c.DocRoot
 	enc.EWASMInterpreter = c.EWASMInterpreter
 	enc.EVMInterpreter = c.EVMInterpreter
+	enc.GossipInterval = c.GossipInterval
 	return &enc, nil
 }
 
@@ -108,6 +110,7 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 		DocRoot                 *string `toml:"-"`
 		EWASMInterpreter        *string
 		EVMInterpreter          *string
+		GossipInterval          *int
 	}
 	var dec Config
 	if err := unmarshal(&dec); err != nil {
@@ -193,6 +196,9 @@ func (c *Config) UnmarshalTOML(unmarshal func(interface{}) error) error {
 	}
 	if dec.EVMInterpreter != nil {
 		c.EVMInterpreter = *dec.EVMInterpreter
+	}
+	if dec.GossipInterval != nil {
+		c.GossipInterval = *dec.GossipInterval
 	}
 	return nil
 }

@@ -19,6 +19,7 @@ package crypto
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/rand"
 	"encoding/hex"
 	"io/ioutil"
 	"math/big"
@@ -26,8 +27,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/kaleidochain/kaleido/common"
+	"github.com/kaleidochain/kaleido/common/hexutil"
 )
 
 var testAddrHex = "970e8128ab834e8eac17ab8e3812f010678cf791"
@@ -247,4 +248,51 @@ func TestPythonIntegration(t *testing.T) {
 
 	t.Logf("msg: %x, privkey: %s sig: %x\n", msg0, kh, sig0)
 	t.Logf("msg: %x, privkey: %s sig: %x\n", msg1, kh, sig1)
+}
+
+func BenchmarkECDSACreateKey(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		GenerateKey()
+	}
+}
+
+func BenchmarkECDSASign(b *testing.B) {
+	key, _ := HexToECDSA(testPrivHex)
+
+	var msg [64]byte
+	rand.Read(msg[:])
+
+	needHash := Keccak256(msg[:])
+	for i := 0; i < b.N; i++ {
+		_, err := Sign(needHash, key)
+		if err != nil {
+			b.Errorf("Sign error: %s", err)
+		}
+	}
+}
+
+func BenchmarkECDSAVerify(b *testing.B) {
+	key, _ := HexToECDSA(testPrivHex)
+	pk := key.Public().(*ecdsa.PublicKey)
+	addr := PubkeyToAddress(*pk)
+
+	var msg [64]byte
+	rand.Read(msg[:])
+
+	needHash := Keccak256(msg[:])
+	signed, err := Sign(needHash, key)
+	if err != nil {
+		b.Error("sign error")
+	}
+
+	for i := 0; i < b.N; i++ {
+		recoveredPub2, err := SigToPub(needHash[:], signed)
+		if err != nil {
+			b.Errorf("ECRecover error: %s", err)
+		}
+		recoveredAddr2 := PubkeyToAddress(*recoveredPub2)
+		if addr != recoveredAddr2 {
+			b.Errorf("Address mismatch: want: %x have: %x", addr, recoveredAddr2)
+		}
+	}
 }

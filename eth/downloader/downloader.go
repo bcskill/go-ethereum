@@ -828,6 +828,11 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *types.Header)
 					break
 				}
 				header := d.lightchain.GetHeaderByHash(h) // Independent of sync mode, header surely exists
+				if header == nil {
+					p.log.Debug("Db has block, but no requested header", "number", n, "hash", h)
+					end = check
+					break
+				}
 				if header.Number.Uint64() != check {
 					p.log.Debug("Received non requested header", "number", header.Number, "hash", header.Hash(), "request", check)
 					return 0, errBadPeer

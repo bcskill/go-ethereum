@@ -79,6 +79,10 @@ func (ethash *Ethash) Author(header *types.Header) (common.Address, error) {
 	return header.Coinbase, nil
 }
 
+func (ethash *Ethash) Coinbase(header *types.Header) common.Address {
+	return header.Coinbase
+}
+
 // VerifyHeader checks whether a header conforms to the consensus rules of the
 // stock Ethereum ethash engine.
 func (ethash *Ethash) VerifyHeader(chain consensus.ChainReader, header *types.Header, seal bool) error {
@@ -281,7 +285,7 @@ func (ethash *Ethash) verifyHeader(chain consensus.ChainReader, header, parent *
 	}
 	// Verify the engine specific seal securing the block
 	if seal {
-		if err := ethash.VerifySeal(chain, header); err != nil {
+		if err := ethash.VerifySeal(chain, header, parent); err != nil {
 			return err
 		}
 	}
@@ -476,7 +480,7 @@ func calcDifficultyFrontier(time uint64, parent *types.Header) *big.Int {
 
 // VerifySeal implements consensus.Engine, checking whether the given block satisfies
 // the PoW difficulty requirements.
-func (ethash *Ethash) VerifySeal(chain consensus.ChainReader, header *types.Header) error {
+func (ethash *Ethash) VerifySeal(chain consensus.ChainReader, header, parent *types.Header) error {
 	return ethash.verifySeal(chain, header, false)
 }
 

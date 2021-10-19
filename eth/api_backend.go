@@ -169,6 +169,10 @@ func (b *EthAPIBackend) GetPoolTransactions() (types.Transactions, error) {
 	return txs, nil
 }
 
+func (b *EthAPIBackend) GetPoolTransactionsCount() int {
+	return b.eth.txPool.PendingCount()
+}
+
 func (b *EthAPIBackend) GetPoolTransaction(hash common.Hash) *types.Transaction {
 	return b.eth.txPool.Get(hash)
 }

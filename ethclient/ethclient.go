@@ -441,6 +441,13 @@ func (ec *Client) PendingTransactionCount(ctx context.Context) (uint, error) {
 	return uint(num), err
 }
 
+// TxPoolPendingTransactionCount returns the total number of pending transactions in txpool.
+func (ec *Client) GetTxPoolPendingTransactionCount(ctx context.Context) (uint, error) {
+	var num hexutil.Uint
+	err := ec.c.CallContext(ctx, &num, "eth_getTxPoolPendingTransactionsCount")
+	return uint(num), err
+}
+
 // TODO: SubscribePendingTransactions (needs server side)
 
 // Contract Calling

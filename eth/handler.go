@@ -228,6 +228,8 @@ func (pm *ProtocolManager) Start(maxPeers int) {
 	// start sync handlers
 	go pm.syncer()
 	go pm.txsyncLoop()
+
+	go pm.enableAcceptTxWhenGotNewHead()
 }
 
 func (pm *ProtocolManager) Stop() {
@@ -330,6 +332,8 @@ func (pm *ProtocolManager) handle(p *peer) error {
 			return err
 		}
 	}
+
+	return nil
 }
 
 // handleMsg is invoked whenever an inbound message is received from a remote
@@ -387,6 +391,13 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 			if origin == nil {
 				break
 			}
+			proof, err := pm.blockchain.BuildProof(origin.Certificate)
+			if err != nil {
+				p.Log().Error("BuildProof error", "height", origin.Number.Uint64(), "error", err)
+				break
+			}
+			origin.Certificate.TrieProof = proof
+
 			headers = append(headers, origin)
 			bytes += estHeaderRlpSize
 
@@ -635,10 +646,29 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 		if err := msg.Decode(&announces); err != nil {
 			return errResp(ErrDecode, "%v: %v", msg, err)
 		}
+
+		var maxBlockNumber uint64
+		var maxBlockHash common.Hash
+
 		// Mark the hashes as present at the remote node
 		for _, block := range announces {
 			p.MarkBlock(block.Hash)
+
+			if block.Number > maxBlockNumber {
+				maxBlockNumber = block.Number
+				maxBlockHash = block.Hash
+			}
 		}
+
+		if pm.chainconfig.Algorand != nil {
+			// In algorand, we set difficulty be 1 each block [1, ...], so blockNumber is equal to TD.
+			// While block broadcasting cancelled, we must update peer's TD at here so that downloader works fine.
+			newTd := new(big.Int).SetUint64(maxBlockNumber)
+			if _, td := p.Head(); newTd.Cmp(td) > 0 {
+				p.SetHead(maxBlockHash, newTd)
+			}
+		}
+
 		// Schedule all the unknown hashes for retrieval
 		unknown := make(newBlockHashesData, 0, len(announces))
 		for _, block := range announces {
@@ -685,6 +715,7 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 	case msg.Code == TxMsg:
 		// Transactions arrived, make sure we have a valid and fresh chain to handle them
 		if atomic.LoadUint32(&pm.acceptTxs) == 0 {
+			log.Trace("drop gossip TxMsg because acceptTxs is not enabled")
 			break
 		}
 		// Transactions can be processed, parse all of them and deliver to the pool
@@ -712,6 +743,13 @@ func (pm *ProtocolManager) handleMsg(p *peer) error {
 func (pm *ProtocolManager) BroadcastBlock(block *types.Block, propagate bool) {
 	hash := block.Hash()
 	peers := pm.peers.PeersWithoutBlock(hash)
+
+	proof, err := pm.blockchain.BuildProof(block.Certificate())
+	if err != nil {
+		log.Error("BuildProof error when BroadcastBlock", "number", block.Number(), "hash", hash)
+		return
+	}
+	block.Certificate().TrieProof = proof
 
 	// If propagation is requested, send to a subset of the peer
 	if propagate {
@@ -743,7 +781,7 @@ func (pm *ProtocolManager) BroadcastBlock(block *types.Block, propagate bool) {
 		for _, peer := range peers {
 			peer.AsyncSendNewBlockHash(block)
 		}
-		log.Trace("Announced block", "hash", hash, "recipients", len(peers), "duration", common.PrettyDuration(time.Since(block.ReceivedAt)))
+		log.Trace("Announced block", "number", block.NumberU64(), "hash", hash, "recipients", len(peers), "duration", common.PrettyDuration(time.Since(block.ReceivedAt)))
 	}
 }
 
@@ -755,6 +793,7 @@ func (pm *ProtocolManager) BroadcastTxs(txs types.Transactions) {
 	// Broadcast transactions to a batch of peers not knowing about it
 	for _, tx := range txs {
 		peers := pm.peers.PeersWithoutTx(tx.Hash())
+		//peers = peers[:int(math.Sqrt(float64(len(peers))))]
 		for _, peer := range peers {
 			txset[peer] = append(txset[peer], tx)
 		}
@@ -771,6 +810,14 @@ func (pm *ProtocolManager) minedBroadcastLoop() {
 	// automatically stops if unsubscribe
 	for obj := range pm.minedBlockSub.Chan() {
 		if ev, ok := obj.Data.(core.NewMinedBlockEvent); ok {
+			if pm.chainconfig.Algorand != nil {
+				// In algorand, we announce new block's parent to avoid duplicate propagation
+				parent := pm.blockchain.GetBlock(ev.Block.ParentHash(), ev.Block.NumberU64()-1)
+				pm.BroadcastBlock(parent, false)
+
+				continue
+			}
+
 			pm.BroadcastBlock(ev.Block, true)  // First propagate block to peers
 			pm.BroadcastBlock(ev.Block, false) // Only then announce to the rest
 		}
@@ -809,5 +856,24 @@ func (pm *ProtocolManager) NodeInfo() *NodeInfo {
 		Genesis:    pm.blockchain.Genesis().Hash(),
 		Config:     pm.blockchain.Config(),
 		Head:       currentBlock.Hash(),
+	}
+}
+
+func (pm *ProtocolManager) enableAcceptTxWhenGotNewHead() {
+	chainHeadCh := make(chan core.ChainHeadEvent, 10)
+	chainHeadSub := pm.blockchain.SubscribeChainHeadEvent(chainHeadCh)
+	defer chainHeadSub.Unsubscribe()
+
+	for {
+		select {
+		case ev := <-chainHeadCh:
+			if ev.Block != nil {
+				atomic.StoreUint32(&pm.acceptTxs, 1) // enable accept tx
+				return
+			}
+
+		case <-pm.quitSync:
+			return
+		}
 	}
 }

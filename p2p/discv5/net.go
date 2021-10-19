@@ -829,7 +829,7 @@ const (
 
 	// Packet type events.
 	// These correspond to packet types in the UDP protocol.
-	pingPacket = iota + 1
+	pingPacket = iota + 88 // distinguish from ethereum network
 	pongPacket
 	findnodePacket
 	neighborsPacket

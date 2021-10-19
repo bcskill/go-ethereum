@@ -19,6 +19,7 @@ package params
 import (
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -41,6 +42,72 @@ var TrustedCheckpoints = map[common.Hash]*TrustedCheckpoint{
 }
 
 var (
+	EthereumMainnetChainConfig = &ChainConfig{
+		ChainID: big.NewInt(888),
+
+		HomesteadBlock:      big.NewInt(1),
+		DAOForkBlock:        nil,
+		DAOForkSupport:      false,
+		EIP150Block:         big.NewInt(2),
+		EIP150Hash:          common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000"),
+		EIP155Block:         big.NewInt(3),
+		EIP158Block:         big.NewInt(3),
+		ByzantiumBlock:      big.NewInt(4),
+		ConstantinopleBlock: nil,
+
+		BlockYear: 10512000, //365 * 86400 / 3
+
+		Algorand: &AlgorandConfig{
+			TimeoutTwoLambda: 2000,
+			TotalWeight:      big.NewInt(10000000000),
+			IntervalSize:     1000 * 1000,
+		},
+	}
+
+	EthereumTestnetChainConfig = &ChainConfig{
+		ChainID: big.NewInt(889),
+
+		HomesteadBlock:      big.NewInt(1),
+		DAOForkBlock:        nil,
+		DAOForkSupport:      false,
+		EIP150Block:         big.NewInt(2),
+		EIP150Hash:          common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000"),
+		EIP155Block:         big.NewInt(3),
+		EIP158Block:         big.NewInt(3),
+		ByzantiumBlock:      big.NewInt(4),
+		ConstantinopleBlock: nil,
+
+		BlockYear: 1000,
+
+		Algorand: &AlgorandConfig{
+			TimeoutTwoLambda: 2000,
+			TotalWeight:      big.NewInt(10000000000),
+			IntervalSize:     1000 * 1000,
+		},
+	}
+
+	EthereumDevnetChainConfig = &ChainConfig{
+		ChainID: big.NewInt(890),
+
+		HomesteadBlock:      big.NewInt(1),
+		DAOForkBlock:        nil,
+		DAOForkSupport:      false,
+		EIP150Block:         big.NewInt(2),
+		EIP150Hash:          common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000"),
+		EIP155Block:         big.NewInt(3),
+		EIP158Block:         big.NewInt(3),
+		ByzantiumBlock:      big.NewInt(4),
+		ConstantinopleBlock: nil,
+
+		BlockYear: 10512000, //365 * 86400 / 3
+
+		Algorand: &AlgorandConfig{
+			TimeoutTwoLambda: 1000,
+			TotalWeight:      big.NewInt(10000000),
+			IntervalSize:     1000, // about 20 minutes
+		},
+	}
+
 	// MainnetChainConfig is the chain parameters to run a node on the main network.
 	MainnetChainConfig = &ChainConfig{
 		ChainID:             big.NewInt(1),
@@ -151,16 +218,16 @@ var (
 	//
 	// This configuration is intentionally not using keyed fields to force anyone
 	// adding flags to the config to also have to set these fields.
-	AllEthashProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, new(EthashConfig), nil}
+	AllEthashProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, 0, new(EthashConfig), nil, nil}
 
 	// AllCliqueProtocolChanges contains every protocol change (EIPs) introduced
 	// and accepted by the Ethereum core developers into the Clique consensus.
 	//
 	// This configuration is intentionally not using keyed fields to force anyone
 	// adding flags to the config to also have to set these fields.
-	AllCliqueProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, &CliqueConfig{Period: 0, Epoch: 30000}}
+	AllCliqueProtocolChanges = &ChainConfig{big.NewInt(1337), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, 0, nil, &CliqueConfig{Period: 0, Epoch: 30000}, nil}
 
-	TestChainConfig = &ChainConfig{big.NewInt(1), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, new(EthashConfig), nil}
+	TestChainConfig = &ChainConfig{big.NewInt(1), big.NewInt(0), nil, false, big.NewInt(0), common.Hash{}, big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, 0, new(EthashConfig), nil, nil}
 	TestRules       = TestChainConfig.Rules(new(big.Int))
 )
 
@@ -201,9 +268,18 @@ type ChainConfig struct {
 	PetersburgBlock     *big.Int `json:"petersburgBlock,omitempty"`     // Petersburg switch block (nil = same as Constantinople)
 	EWASMBlock          *big.Int `json:"ewasmBlock,omitempty"`          // EWASM switch block (nil = no fork, 0 = already activated)
 
+	BlockYear uint64 `json:"blockYear"`
+
 	// Various consensus engines
-	Ethash *EthashConfig `json:"ethash,omitempty"`
-	Clique *CliqueConfig `json:"clique,omitempty"`
+	Ethash   *EthashConfig   `json:"ethash,omitempty"`
+	Clique   *CliqueConfig   `json:"clique,omitempty"`
+	Algorand *AlgorandConfig `json:"algorand,omitempty"`
+}
+
+// TurnConfig stands for TDN turn delivery network
+type TurnConfig struct {
+	TurnNodes []string
+	NetworkID uint64
 }
 
 // EthashConfig is the consensus engine configs for proof-of-work based sealing.
@@ -225,6 +301,54 @@ func (c *CliqueConfig) String() string {
 	return "clique"
 }
 
+type AlgorandConfig struct {
+	TimeoutTwoLambda uint64   `json:"timeoutTwoLambda"`
+	TotalWeight      *big.Int `json:"totalWeight"`
+	IntervalSize     uint32   `json:"intervalSize"`
+}
+
+func (c *AlgorandConfig) GetIntervalSn(height uint64) uint64 {
+	return height / uint64(c.IntervalSize)
+}
+
+func (c *AlgorandConfig) GetInterval(sn uint64) (uint64, uint64) {
+	return sn * uint64(c.IntervalSize), (sn + 1) * uint64(c.IntervalSize)
+}
+
+func (c *AlgorandConfig) TimeoutTwoLambdaDuration() time.Duration {
+	return time.Millisecond * time.Duration(c.TimeoutTwoLambda)
+}
+
+func (c *AlgorandConfig) String() string {
+	return "algorand"
+}
+
+type CommitteeConfig struct {
+	NumProposer            uint64
+	SoftCommitteeThreshold uint64
+	CertCommitteeThreshold uint64
+	NextCommitteeThreshold uint64
+	SoftCommitteeSize      uint64
+	CertCommitteeSize      uint64
+	NextCommitteeSize      uint64
+}
+
+var (
+	HeightUpdateThresholdv1 = uint64(1)
+
+	CommitteeConfigv1 = CommitteeConfig{
+		NumProposer: 20,
+
+		SoftCommitteeThreshold: 2267,
+		CertCommitteeThreshold: 1112,
+		NextCommitteeThreshold: 3838,
+
+		SoftCommitteeSize: 2990,
+		CertCommitteeSize: 1500,
+		NextCommitteeSize: 5000,
+	}
+)
+
 // String implements the fmt.Stringer interface.
 func (c *ChainConfig) String() string {
 	var engine interface{}
@@ -233,6 +357,8 @@ func (c *ChainConfig) String() string {
 		engine = c.Ethash
 	case c.Clique != nil:
 		engine = c.Clique
+	case c.Algorand != nil:
+		engine = c.Algorand
 	default:
 		engine = "unknown"
 	}

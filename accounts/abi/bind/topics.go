@@ -187,3 +187,95 @@ func parseTopics(out interface{}, fields abi.Arguments, topics []common.Hash) er
 	}
 	return nil
 }
+
+func parseTopicsExtra(out interface{}, fields abi.Arguments, topics []common.Hash) error {
+	// Sanity check that the fields and topics match up
+	kind := reflect.ValueOf(out).Elem().Kind()
+
+	fmt.Println("kind = ", kind)
+	if kind != reflect.Slice {
+		return parseTopics(out, fields, topics)
+	} else {
+		if len(fields) != len(topics) {
+			return errors.New("topic/field count mismatch")
+		}
+		// Iterate over all the fields and reconstruct them from topics
+		for i, arg := range fields {
+			if !arg.Indexed {
+				return errors.New("non-indexed field in topic reconstruction")
+			}
+			field := reflect.Indirect(reflect.ValueOf(reflect.ValueOf(out).Elem().Interface().([]interface{})[i]))
+			//if field.Type()==AddressTy
+			//field = reflect.ValueOf(out).Elem().(map[string]interface{})[(capitalise(arg.Name))]
+
+			fmt.Println("xx field.Kind(), field.Type() = ", field.Kind(), field.Type())
+			// Try to parse the topic back into the fields based on primitive types
+			switch field.Kind() {
+			case reflect.Bool:
+				if topics[0][common.HashLength-1] == 1 {
+					field.Set(reflect.ValueOf(true))
+				}
+			case reflect.Int8:
+				num := new(big.Int).SetBytes(topics[0][:])
+				field.Set(reflect.ValueOf(int8(num.Int64())))
+
+			case reflect.Int16:
+				num := new(big.Int).SetBytes(topics[0][:])
+				field.Set(reflect.ValueOf(int16(num.Int64())))
+
+			case reflect.Int32:
+				num := new(big.Int).SetBytes(topics[0][:])
+				field.Set(reflect.ValueOf(int32(num.Int64())))
+
+			case reflect.Int64:
+				num := new(big.Int).SetBytes(topics[0][:])
+				field.Set(reflect.ValueOf(num.Int64()))
+
+			case reflect.Uint8:
+				num := new(big.Int).SetBytes(topics[0][:])
+				field.Set(reflect.ValueOf(uint8(num.Uint64())))
+
+			case reflect.Uint16:
+				num := new(big.Int).SetBytes(topics[0][:])
+				field.Set(reflect.ValueOf(uint16(num.Uint64())))
+
+			case reflect.Uint32:
+				num := new(big.Int).SetBytes(topics[0][:])
+				field.Set(reflect.ValueOf(uint32(num.Uint64())))
+
+			case reflect.Uint64:
+				num := new(big.Int).SetBytes(topics[0][:])
+				field.Set(reflect.ValueOf(num.Uint64()))
+
+			default:
+				// Ran out of plain primitive types, try custom types
+				switch field.Type() {
+				case reflectHash: // Also covers all dynamic types
+					field.Set(reflect.ValueOf(topics[0]))
+
+				case reflectAddress:
+					var addr common.Address
+					copy(addr[:], topics[0][common.HashLength-common.AddressLength:])
+					field.Set(reflect.ValueOf(addr))
+
+				case reflectBigInt:
+					num := new(big.Int).SetBytes(topics[0][:])
+					field.Set(reflect.ValueOf(num))
+
+				default:
+					// Ran out of custom types, try the crazies
+					switch {
+					case arg.Type.T == abi.FixedBytesTy:
+						reflect.Copy(field, reflect.ValueOf(topics[0][common.HashLength-arg.Type.Size:]))
+
+					default:
+						return fmt.Errorf("unsupported indexed type: %v", arg.Type)
+					}
+				}
+			}
+			topics = topics[1:]
+		}
+		return nil
+	}
+
+}

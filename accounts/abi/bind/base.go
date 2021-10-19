@@ -21,8 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-
-	"github.com/ethereum/go-ethereum"
+	"reflect"
+	ethereum "github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -174,6 +174,16 @@ func (c *BoundContract) Transact(opts *TransactOpts, method string, params ...in
 	return c.transact(opts, &c.address, input)
 }
 
+// Transact invokes the (paid) contract method with params as input values, without autofill gas limit.
+func (c *BoundContract) TransactExact(opts *TransactOpts, method string, params ...interface{}) (*types.Transaction, error) {
+	// Otherwise pack up the parameters and invoke the contract
+	input, err := c.abi.Pack(method, params...)
+	if err != nil {
+		return nil, err
+	}
+	return c.transactExact(opts, &c.address, input)
+}
+
 // Transfer initiates a plain transaction to move funds to the contract, calling
 // its default method if one is available.
 func (c *BoundContract) Transfer(opts *TransactOpts) (*types.Transaction, error) {
@@ -183,6 +193,15 @@ func (c *BoundContract) Transfer(opts *TransactOpts) (*types.Transaction, error)
 // transact executes an actual transaction invocation, first deriving any missing
 // authorization fields, and then scheduling the transaction for execution.
 func (c *BoundContract) transact(opts *TransactOpts, contract *common.Address, input []byte) (*types.Transaction, error) {
+	return c.transactBase(opts, contract, input, true)
+}
+
+// transactExact does not autofill gas limit
+func (c *BoundContract) transactExact(opts *TransactOpts, contract *common.Address, input []byte) (*types.Transaction, error) {
+	return c.transactBase(opts, contract, input, false)
+}
+
+func (c *BoundContract) transactBase(opts *TransactOpts, contract *common.Address, input []byte, gasLimitAutoFill bool) (*types.Transaction, error) {
 	var err error
 
 	// Ensure a valid value field and resolve the account nonce
@@ -208,7 +227,7 @@ func (c *BoundContract) transact(opts *TransactOpts, contract *common.Address, i
 		}
 	}
 	gasLimit := opts.GasLimit
-	if gasLimit == 0 {
+	if gasLimit == 0 && gasLimitAutoFill {
 		// Gas estimation cannot succeed without code for method invocations
 		if contract != nil {
 			if code, err := c.transactor.PendingCodeAt(ensureContext(opts.Context), c.address); err != nil {
@@ -338,6 +357,70 @@ func (c *BoundContract) UnpackLog(out interface{}, event string, log types.Log) 
 		}
 	}
 	return parseTopics(out, indexed, log.Topics[1:])
+}
+
+// UnpackLog unpacks a retrieved log into the provided output structure.
+func (c *BoundContract) UnpackLogExtra(out interface{}, event string, log types.Log) error {
+
+	kind := reflect.ValueOf(out).Elem().Kind()
+
+	if kind != reflect.Slice {
+		return c.UnpackLog(out, event, log)
+	} else {
+
+		inputs := c.abi.Events[event].Inputs
+		outLog := make([]interface{}, 0)
+		if len(log.Data) > 0 {
+			for _, arg := range inputs {
+				if !arg.Indexed {
+					outLog = append(outLog, reflect.New(arg.Type.Type).Interface())
+				}
+			}
+
+			fmt.Println("len(outLog), event = ", len(outLog), event)
+			if err := c.abi.Unpack(&outLog, event, log.Data); err != nil {
+				fmt.Println("err = ", err)
+				return err
+			}
+
+		}
+
+		var indexed abi.Arguments
+		for _, arg := range inputs {
+			if arg.Indexed {
+				indexed = append(indexed, arg)
+			}
+		}
+
+		outTopics := make([]interface{}, 0)
+		for _, arg := range inputs {
+			if arg.Indexed {
+				outTopics = append(outTopics, reflect.New(arg.Type.Type).Interface())
+			}
+		}
+
+		ret := parseTopicsExtra(&outTopics, indexed, log.Topics[1:])
+		if ret != nil {
+			fmt.Println("ret = ", ret)
+		}
+		//result.(*[]interface{})
+		//把outTopics填回out
+		if len(outLog) == inputs.LengthNonIndexed() && len(outTopics) == (len(inputs)-inputs.LengthNonIndexed()) {
+			indexTopics := 0
+			indexLog := 0
+			for i, arg := range inputs {
+				if arg.Indexed {
+					(*(out.(*[]interface{})))[i] = outTopics[indexTopics]
+					indexTopics++
+				} else {
+					(*(out.(*[]interface{})))[i] = outLog[indexLog]
+					indexLog++
+				}
+			}
+		}
+
+		return ret
+	}
 }
 
 // ensureContext is a helper method to ensure a context is not nil, even if the

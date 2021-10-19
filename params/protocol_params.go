@@ -19,9 +19,9 @@ package params
 import "math/big"
 
 const (
-	GasLimitBoundDivisor uint64 = 1024    // The bound divisor of the gas limit, used in update calculations.
-	MinGasLimit          uint64 = 5000    // Minimum the gas limit may ever be.
-	GenesisGasLimit      uint64 = 4712388 // Gas limit of the Genesis block.
+	GasLimitBoundDivisor uint64 = 1024     // The bound divisor of the gas limit, used in update calculations.
+	MinGasLimit          uint64 = 63000000 // Minimum the gas limit may ever be.
+	GenesisGasLimit      uint64 = 63000000 // Gas limit of the Genesis block.
 
 	MaximumExtraDataSize  uint64 = 32    // Maximum size extra data may be after Genesis.
 	ExpByteGas            uint64 = 10    // Times ceil(log256(exponent)) for the EXP instruction.
@@ -69,7 +69,8 @@ const (
 	MemoryGas        uint64 = 3     // Times the address of the (highest referenced byte in memory + 1). NOTE: referencing happens on read, write and in instructions such as RETURN and CALL.
 	TxDataNonZeroGas uint64 = 68    // Per byte of data attached to a transaction that is not equal to zero. NOTE: Not payable on data of calls between transactions.
 
-	MaxCodeSize = 24576 // Maximum bytecode to permit for a contract
+	MaxTxSize   = 32 * 1024 // Maximum bytes of tx
+	MaxCodeSize = 24576     // Maximum bytecode to permit for a contract
 
 	// Precompiled contract gas prices
 
@@ -88,8 +89,8 @@ const (
 )
 
 var (
-	DifficultyBoundDivisor = big.NewInt(2048)   // The bound divisor of the difficulty, used in the update calculations.
-	GenesisDifficulty      = big.NewInt(131072) // Difficulty of the Genesis block.
-	MinimumDifficulty      = big.NewInt(131072) // The minimum that the difficulty may ever be.
-	DurationLimit          = big.NewInt(13)     // The decision boundary on the blocktime duration used to determine whether difficulty should go up or not.
+	DifficultyBoundDivisor = big.NewInt(2048) // The bound divisor of the difficulty, used in the update calculations.
+	GenesisDifficulty      = big.NewInt(0)    // Difficulty of the Genesis block.
+	MinimumDifficulty      = big.NewInt(0)    // The minimum that the difficulty may ever be.
+	DurationLimit          = big.NewInt(13)   // The decision boundary on the blocktime duration used to determine whether difficulty should go up or not.
 )

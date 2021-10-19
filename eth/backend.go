@@ -24,6 +24,11 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/ethereum/go-ethereum/core/state"
+
+	"github.com/ethereum/go-ethereum/consensus/algorand"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -58,6 +63,21 @@ type LesServer interface {
 	SetBloomBitsIndexer(bbIndexer *core.ChainIndexer)
 }
 
+type Miner interface {
+	StartService()
+	StopService()
+	Start(coinbase common.Address)
+	Stop()
+	Mining() bool
+	HashRate() uint64
+	SetExtra(extra []byte) error
+	Pending() (*types.Block, *state.StateDB)
+	PendingBlock() *types.Block
+	SetEtherbase(addr common.Address)
+	Protocols() []p2p.Protocol
+	SetRecommitInterval(interval time.Duration)
+}
+
 // Ethereum implements the Ethereum full node service.
 type Ethereum struct {
 	config      *Config
@@ -84,7 +104,7 @@ type Ethereum struct {
 
 	APIBackend *EthAPIBackend
 
-	miner     *miner.Miner
+	miner     Miner
 	gasPrice  *big.Int
 	etherbase common.Address
 
@@ -158,10 +178,15 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 		}
 		cacheConfig = &core.CacheConfig{Disabled: config.NoPruning, TrieCleanLimit: config.TrieCleanCache, TrieDirtyLimit: config.TrieDirtyCache, TrieTimeLimit: config.TrieTimeout}
 	)
+
+	mortgage := core.NewMortgage()
+
 	eth.blockchain, err = core.NewBlockChain(chainDb, cacheConfig, eth.chainConfig, eth.engine, vmConfig, eth.shouldPreserve)
 	if err != nil {
 		return nil, err
 	}
+	eth.blockchain.SetMortgage(mortgage)
+
 	// Rewind the chain in case of an incompatible config upgrade.
 	if compat, ok := genesisErr.(*params.ConfigCompatError); ok {
 		log.Warn("Rewinding chain to upgrade configuration", "err", compat)
@@ -173,14 +198,22 @@ func New(ctx *node.ServiceContext, config *Config) (*Ethereum, error) {
 	if config.TxPool.Journal != "" {
 		config.TxPool.Journal = ctx.ResolvePath(config.TxPool.Journal)
 	}
-	eth.txPool = core.NewTxPool(config.TxPool, eth.chainConfig, eth.blockchain)
+	eth.txPool = core.NewTxPoolWithMortgage(config.TxPool, eth.chainConfig, eth.blockchain, mortgage)
 
 	if eth.protocolManager, err = NewProtocolManager(eth.chainConfig, config.SyncMode, config.NetworkId, eth.eventMux, eth.txPool, eth.engine, eth.blockchain, chainDb, config.Whitelist); err != nil {
 		return nil, err
 	}
 
-	eth.miner = miner.New(eth, eth.chainConfig, eth.EventMux(), eth.engine, config.MinerRecommit, config.MinerGasFloor, config.MinerGasCeil, eth.isLocalBlock)
-	eth.miner.SetExtra(makeExtraData(config.MinerExtraData))
+	if eth.chainConfig.Algorand != nil {
+		eth.miner = algorand.NewMiner(eth, eth.chainConfig, eth.EventMux(), eth.engine, ctx.ResolvePath(""), config.MinerGasFloor, config.MinerGasCeil)
+	} else {
+		eth.miner = miner.New(eth, eth.chainConfig, eth.EventMux(), eth.engine, config.MinerRecommit, config.MinerGasFloor, config.MinerGasCeil, eth.isLocalBlock)
+	}
+	err = eth.miner.SetExtra(makeExtraData(config.MinerExtraData))
+	if err != nil {
+		log.Error("invalid extra data", "extra", config.MinerExtraData)
+		return nil, err
+	}
 
 	eth.APIBackend = &EthAPIBackend{eth, nil}
 	gpoParams := config.GPO
@@ -196,7 +229,7 @@ func makeExtraData(extra []byte) []byte {
 	if len(extra) == 0 {
 		// create default extradata
 		extra, _ = rlp.EncodeToBytes([]interface{}{
-			uint(params.VersionMajor<<16 | params.VersionMinor<<8 | params.VersionPatch),
+			uint(params.KalgoVersionMajor<<16 | params.KalgoVersionMinor<<8 | params.KalgoVersionPatch),
 			"geth",
 			runtime.Version(),
 			runtime.GOOS,
@@ -223,6 +256,10 @@ func CreateDB(ctx *node.ServiceContext, config *Config, name string) (ethdb.Data
 
 // CreateConsensusEngine creates the required type of consensus engine instance for an Ethereum service
 func CreateConsensusEngine(ctx *node.ServiceContext, chainConfig *params.ChainConfig, config *ethash.Config, notify []string, noverify bool, db ethdb.Database) consensus.Engine {
+	// If Algorand is requested, set it up
+	if chainConfig.Algorand != nil {
+		return algorand.New(ctx, chainConfig, db)
+	}
 	// If proof-of-authority is requested, set it up
 	if chainConfig.Clique != nil {
 		return clique.New(chainConfig.Clique, db)
@@ -445,6 +482,10 @@ func (s *Ethereum) StartMining(threads int) error {
 	return nil
 }
 
+func (s *Ethereum) GossipInterval() time.Duration {
+	return time.Duration(s.config.GossipInterval) * time.Millisecond
+}
+
 // StopMining terminates the miner, both at the consensus engine level as well as
 // at the block creation level.
 func (s *Ethereum) StopMining() {
@@ -459,8 +500,8 @@ func (s *Ethereum) StopMining() {
 	s.miner.Stop()
 }
 
-func (s *Ethereum) IsMining() bool      { return s.miner.Mining() }
-func (s *Ethereum) Miner() *miner.Miner { return s.miner }
+func (s *Ethereum) IsMining() bool { return s.miner.Mining() }
+func (s *Ethereum) Miner() Miner   { return s.miner }
 
 func (s *Ethereum) AccountManager() *accounts.Manager  { return s.accountManager }
 func (s *Ethereum) BlockChain() *core.BlockChain       { return s.blockchain }
@@ -476,10 +517,15 @@ func (s *Ethereum) Downloader() *downloader.Downloader { return s.protocolManage
 // Protocols implements node.Service, returning all the currently configured
 // network protocols to start.
 func (s *Ethereum) Protocols() []p2p.Protocol {
-	if s.lesServer == nil {
-		return s.protocolManager.SubProtocols
+	protocols := s.protocolManager.SubProtocols
+	if s.lesServer != nil {
+		protocols = append(protocols, s.lesServer.Protocols()...)
 	}
-	return append(s.protocolManager.SubProtocols, s.lesServer.Protocols()...)
+	if s.chainConfig.Algorand != nil {
+		protocols = append(protocols, s.miner.Protocols()...)
+	}
+
+	return protocols
 }
 
 // Start implements node.Service, starting all internal goroutines needed by the
@@ -504,6 +550,9 @@ func (s *Ethereum) Start(srvr *p2p.Server) error {
 	if s.lesServer != nil {
 		s.lesServer.Start(srvr)
 	}
+
+	s.miner.StartService()
+
 	return nil
 }
 
@@ -518,6 +567,7 @@ func (s *Ethereum) Stop() error {
 		s.lesServer.Stop()
 	}
 	s.txPool.Stop()
+	s.miner.StopService()
 	s.miner.Stop()
 	s.eventMux.Stop()
 

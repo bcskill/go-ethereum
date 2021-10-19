@@ -28,10 +28,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common/fdlimit"
+
+	"github.com/ethereum/go-ethereum/log"
+	"github.com/ethereum/go-ethereum/metrics"
+	"github.com/ethereum/go-ethereum/metrics/influxdb"
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/fdlimit"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/consensus/clique"
 	"github.com/ethereum/go-ethereum/consensus/ethash"
@@ -46,9 +50,6 @@ import (
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/ethstats"
 	"github.com/ethereum/go-ethereum/les"
-	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/metrics"
-	"github.com/ethereum/go-ethereum/metrics/influxdb"
 	"github.com/ethereum/go-ethereum/node"
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/discv5"
@@ -57,7 +58,7 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/netutil"
 	"github.com/ethereum/go-ethereum/params"
 	whisper "github.com/ethereum/go-ethereum/whisper/whisperv6"
-	cli "gopkg.in/urfave/cli.v1"
+	"gopkg.in/urfave/cli.v1"
 )
 
 var (
@@ -97,7 +98,7 @@ func NewApp(gitCommit, usage string) *cli.App {
 	app.Author = ""
 	//app.Authors = nil
 	app.Email = ""
-	app.Version = params.VersionWithMeta
+	app.Version = params.KalgoVersionWithMeta
 	if len(gitCommit) >= 8 {
 		app.Version += "-" + gitCommit[:8]
 	}
@@ -129,7 +130,7 @@ var (
 	}
 	NetworkIdFlag = cli.Uint64Flag{
 		Name:  "networkid",
-		Usage: "Network identifier (integer, 1=Frontier, 2=Morden (disused), 3=Ropsten, 4=Rinkeby)",
+		Usage: "Network identifier (integer, 888=Mainnet, 889=Testnet, 890=Devnet)",
 		Value: eth.DefaultConfig.NetworkId,
 	}
 	TestnetFlag = cli.BoolFlag{
@@ -173,8 +174,8 @@ var (
 	}
 	GCModeFlag = cli.StringFlag{
 		Name:  "gcmode",
-		Usage: `Blockchain garbage collection mode ("full", "archive")`,
-		Value: "full",
+		Usage: `Blockchain garbage collection mode (only support "archive")`,
+		Value: "archive",
 	}
 	LightServFlag = cli.IntFlag{
 		Name:  "lightserv",
@@ -368,14 +369,13 @@ var (
 		Usage: "Minimum gas price for mining a transaction (deprecated, use --miner.gasprice)",
 		Value: eth.DefaultConfig.MinerGasPrice,
 	}
-	MinerEtherbaseFlag = cli.StringFlag{
-		Name:  "miner.etherbase",
-		Usage: "Public address for block mining rewards (default = first account)",
-		Value: "0",
+	MinerStakeOwnerFlag = cli.StringFlag{
+		Name:  "miner.stakeowner",
+		Usage: "Public address of stake owner",
 	}
 	MinerLegacyEtherbaseFlag = cli.StringFlag{
 		Name:  "etherbase",
-		Usage: "Public address for block mining rewards (default = first account, deprecated, use --miner.etherbase)",
+		Usage: "Public address who holds balance for mining (default = first account created)",
 		Value: "0",
 	}
 	MinerExtraDataFlag = cli.StringFlag{
@@ -394,6 +394,10 @@ var (
 	MinerNoVerfiyFlag = cli.BoolFlag{
 		Name:  "miner.noverify",
 		Usage: "Disable remote sealing verification",
+	}
+	GossipIntervalFlag = cli.IntFlag{
+		Name:  "gossipinterval",
+		Usage: "the sleep interval for gossip with other peers in Millisecond",
 	}
 	// Account settings
 	UnlockedAccountFlag = cli.StringFlag{
@@ -642,6 +646,55 @@ var (
 		Usage: "External EVM configuration (default = built-in interpreter)",
 		Value: "",
 	}
+
+	// makeMinerKey command settings
+	MinerKeyCoinbaseFlag = cli.StringFlag{
+		Name:  "minerkey.coinbase",
+		Usage: "Public address for block mining rewards (default = miner.stakeowner)",
+	}
+	MinerKeyStartFlag = cli.Uint64Flag{
+		Name:  "minerkey.start",
+		Usage: "from where mining starts, until the end of the interval",
+	}
+	MinerKeyLifespanFlag = cli.UintFlag{
+		Name:  "minerkey.lifespan",
+		Usage: "lifespan of each sub key in height in the minerkey (0 indicates the default value 100)",
+		Value: 0,
+	}
+
+	FullNodeListenAddrFlag = cli.StringFlag{
+		Name:  "fnaddr",
+		Usage: "Full Node WS-RPC server listening interface",
+	}
+	FullNodePortFlag = cli.IntFlag{
+		Name:  "fnport",
+		Usage: "Full Node WS-RPC server listening port",
+	}
+
+	PortalContractAddrFlag = cli.StringFlag{
+		Name:  "pctaddr",
+		Usage: "Game Contract Address",
+	}
+
+	UseingAccountFlag = cli.IntFlag{
+		Name:  "uaccount",
+		Usage: "Register Inter Use Account Number",
+	}
+
+	UseingAccountPassword = cli.StringFlag{
+		Name:  "uaccountpsd",
+		Usage: "Register Inter Account Password",
+	}
+	VoteMsgHeightFlag = cli.Uint64Flag{
+		Name:  "height",
+		Usage: "'height' Vote Message for 'Print'",
+		Value: 0,
+	}
+	RPCEndpointFlag = cli.StringFlag{
+		Name:  "endpoint",
+		Usage: "Remote endpoint",
+		Value: "",
+	}
 )
 
 // MakeDataDir retrieves the currently requested data directory, terminating
@@ -700,7 +753,7 @@ func setNodeUserIdent(ctx *cli.Context, cfg *node.Config) {
 // setBootstrapNodes creates a list of bootstrap nodes from the command line
 // flags, reverting to pre-configured ones if none have been specified.
 func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
-	urls := params.MainnetBootnodes
+	urls := params.EthereumMainnetBootnodes
 	switch {
 	case ctx.GlobalIsSet(BootnodesFlag.Name) || ctx.GlobalIsSet(BootnodesV4Flag.Name):
 		if ctx.GlobalIsSet(BootnodesV4Flag.Name) {
@@ -709,7 +762,7 @@ func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
 			urls = strings.Split(ctx.GlobalString(BootnodesFlag.Name), ",")
 		}
 	case ctx.GlobalBool(TestnetFlag.Name):
-		urls = params.TestnetBootnodes
+		urls = params.EthereumTestnetBootnodes
 	case ctx.GlobalBool(RinkebyFlag.Name):
 		urls = params.RinkebyBootnodes
 	case ctx.GlobalBool(GoerliFlag.Name):
@@ -731,7 +784,7 @@ func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
 // setBootstrapNodesV5 creates a list of bootstrap nodes from the command line
 // flags, reverting to pre-configured ones if none have been specified.
 func setBootstrapNodesV5(ctx *cli.Context, cfg *p2p.Config) {
-	urls := params.DiscoveryV5Bootnodes
+	urls := params.EthereumMainnetBootnodesV5
 	switch {
 	case ctx.GlobalIsSet(BootnodesFlag.Name) || ctx.GlobalIsSet(BootnodesV5Flag.Name):
 		if ctx.GlobalIsSet(BootnodesV5Flag.Name) {
@@ -739,6 +792,8 @@ func setBootstrapNodesV5(ctx *cli.Context, cfg *p2p.Config) {
 		} else {
 			urls = strings.Split(ctx.GlobalString(BootnodesFlag.Name), ",")
 		}
+	case ctx.GlobalBool(TestnetFlag.Name):
+		urls = params.EthereumTestnetBootnodesV5
 	case ctx.GlobalBool(RinkebyFlag.Name):
 		urls = params.RinkebyBootnodes
 	case ctx.GlobalBool(GoerliFlag.Name):
@@ -891,8 +946,8 @@ func setEtherbase(ctx *cli.Context, ks *keystore.KeyStore, cfg *eth.Config) {
 	if ctx.GlobalIsSet(MinerLegacyEtherbaseFlag.Name) {
 		etherbase = ctx.GlobalString(MinerLegacyEtherbaseFlag.Name)
 	}
-	if ctx.GlobalIsSet(MinerEtherbaseFlag.Name) {
-		etherbase = ctx.GlobalString(MinerEtherbaseFlag.Name)
+	if ctx.GlobalIsSet(MinerStakeOwnerFlag.Name) {
+		etherbase = ctx.GlobalString(MinerStakeOwnerFlag.Name)
 	}
 	// Convert the etherbase into an address and configure it
 	if etherbase != "" {
@@ -953,7 +1008,7 @@ func SetP2PConfig(ctx *cli.Context, cfg *p2p.Config) {
 	if lightClient {
 		ethPeers = 0
 	}
-	log.Info("Maximum peer count", "ETH", ethPeers, "LES", lightPeers, "total", cfg.MaxPeers)
+	log.Debug("Maximum peer count", "ETH", ethPeers, "LES", lightPeers, "total", cfg.MaxPeers)
 
 	if ctx.GlobalIsSet(MaxPendingPeersFlag.Name) {
 		cfg.MaxPendingPeers = ctx.GlobalInt(MaxPendingPeersFlag.Name)
@@ -1189,6 +1244,10 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 
 	if ctx.GlobalIsSet(SyncModeFlag.Name) {
 		cfg.SyncMode = *GlobalTextMarshaler(ctx, SyncModeFlag.Name).(*downloader.SyncMode)
+		// TODO: temporarily disabled FastSync
+		if cfg.SyncMode == downloader.FastSync {
+			cfg.SyncMode = downloader.FullSync
+		}
 	}
 	if ctx.GlobalIsSet(LightServFlag.Name) {
 		cfg.LightServ = ctx.GlobalInt(LightServFlag.Name)
@@ -1204,8 +1263,8 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 	}
 	cfg.DatabaseHandles = makeDatabaseHandles()
 
-	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != "full" && gcmode != "archive" {
-		Fatalf("--%s must be either 'full' or 'archive'", GCModeFlag.Name)
+	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != "archive" {
+		Fatalf("--%s must be 'archive'", GCModeFlag.Name)
 	}
 	cfg.NoPruning = ctx.GlobalString(GCModeFlag.Name) == "archive"
 
@@ -1267,10 +1326,10 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 	// Override any default configs for hard coded networks.
 	switch {
 	case ctx.GlobalBool(TestnetFlag.Name):
+		cfg.Genesis = core.DefaultethereumTestnetGenesisBlock()
 		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
-			cfg.NetworkId = 3
+			cfg.NetworkId = cfg.Genesis.Config.ChainID.Uint64()
 		}
-		cfg.Genesis = core.DefaultTestnetGenesisBlock()
 	case ctx.GlobalBool(RinkebyFlag.Name):
 		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
 			cfg.NetworkId = 4
@@ -1311,6 +1370,9 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *eth.Config) {
 	// TODO(fjl): move trie cache generations into config
 	if gen := ctx.GlobalInt(TrieCacheGenFlag.Name); gen > 0 {
 		state.MaxTrieCacheGen = uint16(gen)
+	}
+	if ctx.GlobalIsSet(GossipIntervalFlag.Name) {
+		cfg.GossipInterval = ctx.GlobalInt(GossipIntervalFlag.Name)
 	}
 }
 
@@ -1435,7 +1497,7 @@ func MakeGenesis(ctx *cli.Context) *core.Genesis {
 	var genesis *core.Genesis
 	switch {
 	case ctx.GlobalBool(TestnetFlag.Name):
-		genesis = core.DefaultTestnetGenesisBlock()
+		genesis = core.DefaultethereumTestnetGenesisBlock()
 	case ctx.GlobalBool(RinkebyFlag.Name):
 		genesis = core.DefaultRinkebyGenesisBlock()
 	case ctx.GlobalBool(GoerliFlag.Name):
@@ -1470,8 +1532,8 @@ func MakeChain(ctx *cli.Context, stack *node.Node) (chain *core.BlockChain, chai
 			}, nil, false)
 		}
 	}
-	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != "full" && gcmode != "archive" {
-		Fatalf("--%s must be either 'full' or 'archive'", GCModeFlag.Name)
+	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != "archive" {
+		Fatalf("--%s must be 'archive'", GCModeFlag.Name)
 	}
 	cache := &core.CacheConfig{
 		Disabled:       ctx.GlobalString(GCModeFlag.Name) == "archive",

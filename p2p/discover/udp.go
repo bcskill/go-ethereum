@@ -58,7 +58,7 @@ const (
 
 // RPC packet types
 const (
-	pingPacket = iota + 1 // zero is 'reserved'
+	pingPacket = iota + 88 // distinguish from ethereum network
 	pongPacket
 	findnodePacket
 	neighborsPacket

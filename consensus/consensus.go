@@ -47,6 +47,9 @@ type ChainReader interface {
 
 	// GetBlock retrieves a block from the database by hash and number.
 	GetBlock(hash common.Hash, number uint64) *types.Block
+
+	// StateAtHeader returns a new mutable state based on the given-header.
+	StateAtHeader(header *types.Header) (*state.StateDB, error)
 }
 
 // Engine is an algorithm agnostic consensus engine.
@@ -55,6 +58,9 @@ type Engine interface {
 	// block, which may be different from the header's coinbase if a consensus
 	// engine is based on signatures.
 	Author(header *types.Header) (common.Address, error)
+
+	// Coinbase returns the beneficiary of a block
+	Coinbase(header *types.Header) common.Address
 
 	// VerifyHeader checks whether a header conforms to the consensus rules of a
 	// given engine. Verifying the seal may be done optionally here, or explicitly
@@ -73,7 +79,7 @@ type Engine interface {
 
 	// VerifySeal checks whether the crypto seal on a header is valid according to
 	// the consensus rules of the given engine.
-	VerifySeal(chain ChainReader, header *types.Header) error
+	VerifySeal(chain ChainReader, header, parent *types.Header) error
 
 	// Prepare initializes the consensus fields of a block header according to the
 	// rules of a particular engine. The changes are executed inline.

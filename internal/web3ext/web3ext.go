@@ -32,7 +32,22 @@ var Modules = map[string]string{
 	"shh":        Shh_JS,
 	"swarmfs":    SWARMFS_JS,
 	"txpool":     TxPool_JS,
+	"dgame":      DGame_JS,
 }
+
+const DGame_JS = `
+web3._extend({
+	property: 'dgame',
+	methods: [
+		new web3._extend.Method({
+			name: 'call',
+			call: 'dgame_call',
+			params: 1,
+			inputFormatter: [null]
+		}),
+	]
+});
+`
 
 const Chequebook_JS = `
 web3._extend({

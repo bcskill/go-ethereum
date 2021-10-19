@@ -553,6 +553,7 @@ func (s *Service) assembleBlockStats(block *types.Block) *blockStats {
 	// Assemble and return the block stats
 	author, _ := s.engine.Author(header)
 
+	totalTokens := new(big.Int).Div(header.TotalBalanceOfMiners, common.BigEther)
 	return &blockStats{
 		Number:     header.Number,
 		Hash:       header.Hash(),
@@ -561,7 +562,7 @@ func (s *Service) assembleBlockStats(block *types.Block) *blockStats {
 		Miner:      author,
 		GasUsed:    header.GasUsed,
 		GasLimit:   header.GasLimit,
-		Diff:       header.Difficulty.String(),
+		Diff:       totalTokens.String(),
 		TotalDiff:  td.String(),
 		Txs:        txs,
 		TxHash:     header.TxHash,

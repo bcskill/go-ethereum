@@ -53,7 +53,7 @@ func NewStateProcessor(config *params.ChainConfig, bc *BlockChain, engine consen
 // Process returns the receipts and logs accumulated during the process and
 // returns the amount of gas that was used in the process. If any of the
 // transactions failed to execute due to insufficient gas it will return an error.
-func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg vm.Config) (types.Receipts, []*types.Log, uint64, error) {
+func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg vm.Config) (types.Receipts, []*types.Log, uint64, MortgageContractCounter, error) {
 	var (
 		receipts types.Receipts
 		usedGas  = new(uint64)
@@ -65,20 +65,25 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 	if p.config.DAOForkSupport && p.config.DAOForkBlock != nil && p.config.DAOForkBlock.Cmp(block.Number()) == 0 {
 		misc.ApplyDAOHardFork(statedb)
 	}
+
+	mortgageContractCounter := make(MortgageContractCounter)
 	// Iterate over and process the individual transactions
 	for i, tx := range block.Transactions() {
 		statedb.Prepare(tx.Hash(), block.Hash(), i)
 		receipt, _, err := ApplyTransaction(p.config, p.bc, nil, gp, statedb, header, tx, usedGas, cfg)
 		if err != nil {
-			return nil, nil, 0, err
+			return nil, nil, 0, nil, err
 		}
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, receipt.Logs...)
+
+		ProcessTx(mortgageContractCounter, statedb, tx)
 	}
+
 	// Finalize the block, applying any consensus engine specific extras (e.g. block rewards)
 	p.engine.Finalize(p.bc, header, statedb, block.Transactions(), block.Uncles(), receipts)
 
-	return receipts, allLogs, *usedGas, nil
+	return receipts, allLogs, *usedGas, mortgageContractCounter, nil
 }
 
 // ApplyTransaction attempts to apply a transaction to the given state database

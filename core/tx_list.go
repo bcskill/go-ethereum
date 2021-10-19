@@ -23,6 +23,8 @@ import (
 	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/syscon"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 )
@@ -287,7 +289,7 @@ func (l *txList) Forward(threshold uint64) types.Transactions {
 // a point in calculating all the costs or if the balance covers all. If the threshold
 // is lower than the costgas cap, the caps will be reset to a new high after removing
 // the newly invalidated transactions.
-func (l *txList) Filter(costLimit *big.Int, gasLimit uint64) (types.Transactions, types.Transactions) {
+func (l *txList) Filter(stateDb *state.StateDB, costLimit *big.Int, gasLimit uint64) (types.Transactions, types.Transactions) {
 	// If all transactions are below the threshold, short circuit
 	if l.costcap.Cmp(costLimit) <= 0 && l.gascap <= gasLimit {
 		return nil, nil
@@ -296,7 +298,25 @@ func (l *txList) Filter(costLimit *big.Int, gasLimit uint64) (types.Transactions
 	l.gascap = gasLimit
 
 	// Filter out all the transactions above the account's funds
-	removed := l.txs.Filter(func(tx *types.Transaction) bool { return tx.Cost().Cmp(costLimit) > 0 || tx.Gas() > gasLimit })
+	removed := l.txs.Filter(func(tx *types.Transaction) bool {
+
+		toAddr := tx.To()
+		if tx.GasLimit() == 0 {
+			err, _, _ := syscon.ValidatePayByContract(stateDb, tx.From(), tx)
+			if err != nil {
+				log.Trace("tx filter by contract", "tx", tx.Hash(), "gasPrice", tx.GasPrice(), "gasLimit", tx.GasLimit(), "err", err)
+				return true
+			}
+
+			creator := syscon.CreatorOrSelf(stateDb, tx.To())
+			ContractCostLimt := stateDb.GetBalance(creator)
+			gas := syscon.GetGasLimit(stateDb, toAddr)
+			ContractCost := new(big.Int).Mul(tx.GasPrice(), new(big.Int).SetUint64(gas))
+
+			return ContractCost.Cmp(ContractCostLimt) > 0 || tx.Value().Cmp(costLimit) > 0 || gas > gasLimit
+		}
+		return tx.Cost().Cmp(costLimit) > 0 || tx.Gas() > gasLimit
+	})
 
 	// If the list was strict, filter anything above the lowest nonce
 	var invalids types.Transactions
@@ -363,50 +383,19 @@ func (l *txList) Flatten() types.Transactions {
 	return l.txs.Flatten()
 }
 
-// priceHeap is a heap.Interface implementation over transactions for retrieving
-// price-sorted transactions to discard when the pool fills up.
-type priceHeap []*types.Transaction
-
-func (h priceHeap) Len() int      { return len(h) }
-func (h priceHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
-
-func (h priceHeap) Less(i, j int) bool {
-	// Sort primarily by price, returning the cheaper one
-	switch h[i].GasPrice().Cmp(h[j].GasPrice()) {
-	case -1:
-		return true
-	case 1:
-		return false
-	}
-	// If the prices match, stabilize via nonces (high nonce is worse)
-	return h[i].Nonce() > h[j].Nonce()
-}
-
-func (h *priceHeap) Push(x interface{}) {
-	*h = append(*h, x.(*types.Transaction))
-}
-
-func (h *priceHeap) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
-}
-
 // txPricedList is a price-sorted heap to allow operating on transactions pool
 // contents in a price-incrementing way.
 type txPricedList struct {
-	all    *txLookup  // Pointer to the map of all transactions
-	items  *priceHeap // Heap of prices of all the stored transactions
-	stales int        // Number of stale price points to (re-heap trigger)
+	all    *txLookup           // Pointer to the map of all transactions
+	items  *types.TxByPriceAsc // Heap of prices of all the stored transactions
+	stales int                 // Number of stale price points to (re-heap trigger)
 }
 
 // newTxPricedList creates a new price-sorted transaction heap.
 func newTxPricedList(all *txLookup) *txPricedList {
 	return &txPricedList{
 		all:   all,
-		items: new(priceHeap),
+		items: new(types.TxByPriceAsc),
 	}
 }
 
@@ -425,7 +414,7 @@ func (l *txPricedList) Removed() {
 		return
 	}
 	// Seems we've reached a critical number of stale transactions, reheap
-	reheap := make(priceHeap, 0, l.all.Count())
+	reheap := make(types.TxByPriceAsc, 0, l.all.Count())
 
 	l.stales, l.items = 0, &reheap
 	l.all.Range(func(hash common.Hash, tx *types.Transaction) bool {

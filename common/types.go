@@ -18,6 +18,7 @@ package common
 
 import (
 	"database/sql/driver"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -54,6 +55,12 @@ func BytesToHash(b []byte) Hash {
 	return h
 }
 
+func Uint64ToHash(n uint64) Hash {
+	var h Hash
+	binary.BigEndian.PutUint64(h[HashLength-8:], n)
+	return h
+}
+
 // BigToHash sets byte representation of b to hash.
 // If b is larger than len(h), b will be cropped from the left.
 func BigToHash(b *big.Int) Hash { return BytesToHash(b.Bytes()) }
@@ -61,6 +68,9 @@ func BigToHash(b *big.Int) Hash { return BytesToHash(b.Bytes()) }
 // HexToHash sets byte representation of s to hash.
 // If b is larger than len(h), b will be cropped from the left.
 func HexToHash(s string) Hash { return BytesToHash(FromHex(s)) }
+
+// Get the string representation of the underlying hash
+func (h Hash) Str() string { return string(h[:]) }
 
 // Bytes gets the byte representation of the underlying hash.
 func (h Hash) Bytes() []byte { return h[:] }
@@ -141,6 +151,10 @@ func (h Hash) Value() (driver.Value, error) {
 	return h[:], nil
 }
 
+func EmptyHash(h Hash) bool {
+	return h == Hash{}
+}
+
 // UnprefixedHash allows marshaling a Hash without 0x prefix.
 type UnprefixedHash Hash
 
@@ -183,6 +197,8 @@ func IsHexAddress(s string) bool {
 	}
 	return len(s) == 2*AddressLength && isHex(s)
 }
+
+func (a Address) Str() string { return string(a[:]) }
 
 // Bytes gets the string representation of the underlying address.
 func (a Address) Bytes() []byte { return a[:] }

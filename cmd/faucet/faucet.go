@@ -135,14 +135,20 @@ func main() {
 	if err != nil {
 		log.Crit("Failed to render the faucet template", "err", err)
 	}
-	// Load and parse the genesis block requested by the user
-	blob, err := ioutil.ReadFile(*genesisFlag)
-	if err != nil {
-		log.Crit("Failed to read genesis block contents", "genesis", *genesisFlag, "err", err)
-	}
-	genesis := new(core.Genesis)
-	if err = json.Unmarshal(blob, genesis); err != nil {
-		log.Crit("Failed to parse genesis block json", "err", err)
+
+	var genesis *core.Genesis
+	if *genesisFlag == "" {
+		genesis = core.DefaultethereumTestnetGenesisBlock()
+	} else {
+		// Load and parse the genesis block requested by the user
+		blob, err := ioutil.ReadFile(*genesisFlag)
+		if err != nil {
+			log.Crit("Failed to read genesis block contents", "genesis", *genesisFlag, "err", err)
+		}
+		genesis = new(core.Genesis)
+		if err = json.Unmarshal(blob, genesis); err != nil {
+			log.Crit("Failed to parse genesis block json", "err", err)
+		}
 	}
 	// Convert the bootnodes to internal enode representations
 	var enodes []*discv5.Node
@@ -154,7 +160,8 @@ func main() {
 		}
 	}
 	// Load up the account key and decrypt its password
-	if blob, err = ioutil.ReadFile(*accPassFlag); err != nil {
+	blob, err := ioutil.ReadFile(*accPassFlag)
+	if err != nil {
 		log.Crit("Failed to read account password contents", "file", *accPassFlag, "err", err)
 	}
 	// Delete trailing newline in password
@@ -216,7 +223,7 @@ func newFaucet(genesis *core.Genesis, port int, enodes []*discv5.Node, network u
 	// Assemble the raw devp2p protocol stack
 	stack, err := node.New(&node.Config{
 		Name:    "geth",
-		Version: params.VersionWithMeta,
+		Version: params.KalgoVersionMeta,
 		DataDir: filepath.Join(os.Getenv("HOME"), ".faucet"),
 		P2P: p2p.Config{
 			NAT:              nat.Any(),

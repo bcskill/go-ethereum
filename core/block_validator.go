@@ -98,6 +98,13 @@ func (v *BlockValidator) ValidateState(block, parent *types.Block, statedb *stat
 	if root := statedb.IntermediateRoot(v.config.IsEIP158(header.Number)); header.Root != root {
 		return fmt.Errorf("invalid merkle root (remote: %x local: %x)", header.Root, root)
 	}
+
+	// Validate TotalBalanceOfMiners
+	if v.config.Algorand != nil {
+		if total := statedb.TotalBalanceOfMiners(); total.Cmp(header.TotalBalanceOfMiners) != 0 {
+			return fmt.Errorf("invalid weight total (remote: %d local: %d)", header.TotalBalanceOfMiners, total)
+		}
+	}
 	return nil
 }
 

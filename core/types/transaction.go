@@ -41,6 +41,7 @@ type Transaction struct {
 	hash atomic.Value
 	size atomic.Value
 	from atomic.Value
+	ContractGas uint64
 }
 
 type txdata struct {
@@ -172,12 +173,28 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 	return nil
 }
 
-func (tx *Transaction) Data() []byte       { return common.CopyBytes(tx.data.Payload) }
-func (tx *Transaction) Gas() uint64        { return tx.data.GasLimit }
+func (tx *Transaction) Data() []byte { return common.CopyBytes(tx.data.Payload) }
+func (tx *Transaction) DataLen() int { return len(tx.data.Payload) }
+func (tx *Transaction) Gas() uint64 {
+	if tx.data.GasLimit > 0 {
+		return tx.data.GasLimit
+	}
+	return tx.ContractGas
+}
 func (tx *Transaction) GasPrice() *big.Int { return new(big.Int).Set(tx.data.Price) }
 func (tx *Transaction) Value() *big.Int    { return new(big.Int).Set(tx.data.Amount) }
 func (tx *Transaction) Nonce() uint64      { return tx.data.AccountNonce }
 func (tx *Transaction) CheckNonce() bool   { return true }
+func (tx *Transaction) GasLimit() uint64 {
+	return tx.data.GasLimit
+}
+func (tx *Transaction) From() common.Address {
+	if sc := tx.from.Load(); sc != nil {
+		sigCache := sc.(sigCache)
+		return sigCache.from
+	}
+	return common.Address{}
+}
 
 // To returns the recipient address of the transaction.
 // It returns nil if the transaction is a contract creation.
@@ -226,6 +243,7 @@ func (tx *Transaction) AsMessage(s Signer) (Message, error) {
 		amount:     tx.data.Amount,
 		data:       tx.data.Payload,
 		checkNonce: true,
+		txHash:     tx.Hash(),
 	}
 
 	var err error
@@ -318,6 +336,37 @@ func (s *TxByPrice) Pop() interface{} {
 	return x
 }
 
+// TxByPriceAsc is a heap.Interface implementation over transactions for retrieving
+// price-sorted transactions to discard when the pool fills up.
+type TxByPriceAsc Transactions
+
+func (h TxByPriceAsc) Len() int      { return len(h) }
+func (h TxByPriceAsc) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h TxByPriceAsc) Less(i, j int) bool {
+	// Sort primarily by price, returning the cheaper one
+	switch h[i].data.Price.Cmp(h[j].data.Price) {
+	case -1:
+		return true
+	case 1:
+		return false
+	}
+	// If the prices match, stabilize via nonces (high nonce is worse)
+	return h[i].data.AccountNonce > h[j].data.AccountNonce
+}
+
+func (h *TxByPriceAsc) Push(x interface{}) {
+	*h = append(*h, x.(*Transaction))
+}
+
+func (h *TxByPriceAsc) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
 // TransactionsByPriceAndNonce represents a set of transactions that can return
 // transactions in a profit-maximizing sorted order, while supporting removing
 // entire batches of transactions for non-executable accounts.
@@ -392,6 +441,7 @@ type Message struct {
 	gasPrice   *big.Int
 	data       []byte
 	checkNonce bool
+	txHash     common.Hash
 }
 
 func NewMessage(from common.Address, to *common.Address, nonce uint64, amount *big.Int, gasLimit uint64, gasPrice *big.Int, data []byte, checkNonce bool) Message {
@@ -414,4 +464,22 @@ func (m Message) Value() *big.Int      { return m.amount }
 func (m Message) Gas() uint64          { return m.gasLimit }
 func (m Message) Nonce() uint64        { return m.nonce }
 func (m Message) Data() []byte         { return m.data }
+func (m Message) DataLen() int         { return len(m.data) }
 func (m Message) CheckNonce() bool     { return m.checkNonce }
+
+// Hash returns a tx hash if exists, a rlpHash of self otherwise.
+func (m Message) Hash() common.Hash {
+	if !common.EmptyHash(m.txHash) {
+		return m.txHash
+	}
+
+	return rlpHash([]interface{}{
+		m.to,
+		m.from,
+		m.nonce,
+		m.amount,
+		m.gasLimit,
+		m.gasPrice,
+		m.data,
+	})
+}

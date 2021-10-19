@@ -183,6 +183,7 @@ var AppHelpFlagGroups = []flagGroup{
 			utils.NetrestrictFlag,
 			utils.NodeKeyFileFlag,
 			utils.NodeKeyHexFlag,
+			utils.GossipIntervalFlag,
 		},
 	},
 	{
@@ -194,10 +195,14 @@ var AppHelpFlagGroups = []flagGroup{
 			utils.MinerGasPriceFlag,
 			utils.MinerGasTargetFlag,
 			utils.MinerGasLimitFlag,
-			utils.MinerEtherbaseFlag,
+			utils.MinerStakeOwnerFlag,
 			utils.MinerExtraDataFlag,
 			utils.MinerRecommitIntervalFlag,
 			utils.MinerNoVerfiyFlag,
+
+			utils.MinerKeyCoinbaseFlag,
+			utils.MinerKeyStartFlag,
+			utils.MinerKeyLifespanFlag,
 		},
 	},
 	{
@@ -220,6 +225,8 @@ var AppHelpFlagGroups = []flagGroup{
 		Flags: append([]cli.Flag{
 			utils.FakePoWFlag,
 			utils.NoCompactionFlag,
+			utils.VoteMsgHeightFlag,
+			utils.RPCEndpointFlag,
 		}, debug.Flags...),
 	},
 	{

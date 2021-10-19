@@ -105,7 +105,7 @@ var (
 		utils.MinerGasLimitFlag,
 		utils.MinerGasPriceFlag,
 		utils.MinerLegacyGasPriceFlag,
-		utils.MinerEtherbaseFlag,
+		utils.MinerStakeOwnerFlag,
 		utils.MinerLegacyEtherbaseFlag,
 		utils.MinerExtraDataFlag,
 		utils.MinerLegacyExtraDataFlag,
@@ -136,6 +136,15 @@ var (
 		utils.EWASMInterpreterFlag,
 		utils.EVMInterpreterFlag,
 		configFileFlag,
+
+		utils.GossipIntervalFlag,
+
+		utils.MinerKeyCoinbaseFlag,
+		utils.MinerKeyStartFlag,
+		utils.MinerKeyLifespanFlag,
+
+		utils.VoteMsgHeightFlag,
+		utils.RPCEndpointFlag,
 	}
 
 	rpcFlags = []cli.Flag{
@@ -185,6 +194,11 @@ func init() {
 		copydbCommand,
 		removedbCommand,
 		dumpCommand,
+		makeMinerKeyCommand,
+
+		dumpVoteCommand,
+		minerkeyReaderCommand,
+		minerDbReaderCommand,
 		// See monitorcmd.go:
 		monitorCommand,
 		// See accountcmd.go:

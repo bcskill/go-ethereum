@@ -18,6 +18,7 @@
 package core
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -136,6 +137,8 @@ type BlockChain struct {
 
 	badBlocks      *lru.Cache              // Bad block cache
 	shouldPreserve func(*types.Block) bool // Function used to determine whether should preserve the given block.
+
+	mortgage *MortgageWorker
 }
 
 // NewBlockChain returns a fully initialised block chain using information
@@ -213,6 +216,10 @@ func (bc *BlockChain) getProcInterrupt() bool {
 // GetVMConfig returns the block chain VM config.
 func (bc *BlockChain) GetVMConfig() *vm.Config {
 	return &bc.vmConfig
+}
+
+func (bc *BlockChain) SetMortgage(mortgage *MortgageWorker) {
+	bc.mortgage = mortgage
 }
 
 // loadLastState loads the last known chain state from the database. This method
@@ -401,6 +408,11 @@ func (bc *BlockChain) State() (*state.StateDB, error) {
 // StateAt returns a new mutable state based on a particular point in time.
 func (bc *BlockChain) StateAt(root common.Hash) (*state.StateDB, error) {
 	return state.New(root, bc.stateCache)
+}
+
+// StateAtHeader returns a new mutable state based on the given-header.
+func (bc *BlockChain) StateAtHeader(header *types.Header) (*state.StateDB, error) {
+	return bc.StateAt(header.Root)
 }
 
 // StateCache returns the caching database underpinning the blockchain instance.
@@ -599,6 +611,28 @@ func (bc *BlockChain) HasBlockAndState(hash common.Hash, number uint64) bool {
 		return false
 	}
 	return bc.HasState(block.Root())
+}
+
+func (bc *BlockChain) BuildProof(certificate *types.Certificate) (trieProof types.NodeList, err error) {
+	if certificate.Height < 1 {
+		return
+	}
+	parent := bc.GetHeaderByNumber(certificate.Height - 1)
+	if parent == nil {
+		err = fmt.Errorf("GetHeaderByNumber error, height:%d", certificate.Height-1)
+		return
+	}
+	parentStatedb, err := bc.StateAtHeader(parent)
+	if err != nil {
+		return
+	}
+
+	proof := types.NewNodeSet()
+	err = BuildProof(bc.chainConfig.Algorand, parentStatedb, parent.Root, certificate.Height, certificate.Proposal.Credential.Address, certificate.CertVoteSet, proof)
+	if err == nil {
+		trieProof = proof.NodeList()
+	}
+	return
 }
 
 // GetBlock retrieves a block from the database by hash and number,
@@ -922,8 +956,27 @@ func (bc *BlockChain) WriteBlockWithoutState(block *types.Block, td *big.Int) (e
 	return nil
 }
 
+// WriteBlockWithStateIfNotExists checks if the block and state exists, then writes
+// them by invoking WriteBlockWithState
+func (bc *BlockChain) WriteBlockWithStateIfNotExists(block *types.Block, receipts []*types.Receipt, state *state.StateDB) (status WriteStatus, err error) {
+	bc.chainmu.Lock()
+	defer bc.chainmu.Unlock()
+
+	if bc.HasBlockAndState(block.Hash(), block.NumberU64()) {
+		return NonStatTy, ErrKnownBlock
+	}
+
+	status, err = bc.WriteBlockWithState(block, receipts, state)
+	return
+}
+
 // WriteBlockWithState writes the block and all associated state to the database.
 func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.Receipt, state *state.StateDB) (status WriteStatus, err error) {
+	if bc.chainConfig.Algorand != nil && block.Hash() == bc.CurrentBlock().Hash() {
+		log.Warn("Algorand conflicts between downloader and miner, maybe can return directly",
+			"number", block.NumberU64(), "hash", block.Hash())
+	}
+
 	bc.wg.Add(1)
 	defer bc.wg.Done()
 
@@ -1027,6 +1080,37 @@ func (bc *BlockChain) WriteBlockWithState(block *types.Block, receipts []*types.
 			reorg = !currentPreserve && (blockPreserve || mrand.Float64() < 0.5)
 		}
 	}
+	if bc.chainConfig.Algorand != nil {
+		reorg = false
+		// 1. we choose longest chain
+		if block.NumberU64() > currentBlock.NumberU64() {
+			reorg = true
+		} else if block.NumberU64() == currentBlock.NumberU64() {
+			// 2. we choose the block with min leader credential
+			log.Warn("Fork detected! try to choose min leader credential",
+				"height", block.NumberU64(),
+				"remoteBlock", block.Hash().TerminalString(),
+				"currentBlock", currentBlock.Hash().TerminalString())
+			credential := block.Certificate().Proposal.Credential
+			currentCredential := currentBlock.Certificate().Proposal.Credential
+			credentialWeight := GetSortitionWeight(bc.chainConfig.Algorand, bc, block.NumberU64(), credential.Proof, credential.Address)
+			currentCredentialWeight := GetSortitionWeight(bc.chainConfig.Algorand, bc, currentBlock.NumberU64(), currentCredential.Proof, currentCredential.Address)
+			if cmp := types.LessThanByProofInt(&credential.Proof, &currentCredential.Proof, credentialWeight, currentCredentialWeight); cmp < 0 {
+				reorg = true
+			} else if cmp == 0 {
+				// 3. we choose the block with min hash
+				log.Warn("Fork detected! try to choose min block hash",
+					"height", block.NumberU64(),
+					"remoteBlock", block.Hash().TerminalString(),
+					"currentBlock", currentBlock.Hash().TerminalString())
+				blockHash := block.Hash()
+				currentBlockHash := currentBlock.Hash()
+				if bytes.Compare(blockHash[:], currentBlockHash[:]) < 0 {
+					reorg = true
+				}
+			}
+		}
+	}
 	if reorg {
 		// Reorganise the chain if the parent is not the head block
 		if block.ParentHash() != currentBlock.Hash() {
@@ -1123,6 +1207,7 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, []
 		events        = make([]interface{}, 0, len(chain))
 		lastCanon     *types.Block
 		coalescedLogs []*types.Log
+		mortgageContractCounters = make([]HeightMortgageContractCounter, 0)
 	)
 	// Start the parallel header verifier
 	headers := make([]*types.Header, len(chain))
@@ -1201,9 +1286,12 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, []
 		if err != nil {
 			return it.index, events, coalescedLogs, err
 		}
+		if bc.chainConfig.Algorand != nil {
+			state.EnableMinerTracker(bc.chainConfig.Algorand, block.NumberU64(), parent.TotalBalanceOfMiners())
+		}
 		// Process block using the parent state as reference point.
 		t0 := time.Now()
-		receipts, logs, usedGas, err := bc.processor.Process(block, state, bc.vmConfig)
+		receipts, logs, usedGas, mortgageContractCounter, err := bc.processor.Process(block, state, bc.vmConfig)
 		t1 := time.Now()
 		if err != nil {
 			bc.reportBlock(block, receipts, err)
@@ -1241,6 +1329,12 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, []
 			// Only count canonical blocks for GC processing time
 			bc.gcproc += proctime
 
+			heightMortgageContractCounter := HeightMortgageContractCounter{
+				Height:  block.NumberU64(),
+				Counter: mortgageContractCounter,
+			}
+			mortgageContractCounters = append(mortgageContractCounters, heightMortgageContractCounter)
+
 		case SideStatTy:
 			log.Debug("Inserted forked block", "number", block.Number(), "hash", block.Hash(),
 				"diff", block.Difficulty(), "elapsed", common.PrettyDuration(time.Since(start)),
@@ -1274,8 +1368,16 @@ func (bc *BlockChain) insertChain(chain types.Blocks, verifySeals bool) (int, []
 	// Append a single chain head event if we've progressed the chain
 	if lastCanon != nil && bc.CurrentBlock().Hash() == lastCanon.Hash() {
 		events = append(events, ChainHeadEvent{lastCanon})
+
+		bc.UpdateMortgage(mortgageContractCounters)
 	}
 	return it.index, events, coalescedLogs, err
+}
+
+func (bc *BlockChain) UpdateMortgage(counters []HeightMortgageContractCounter) {
+	if bc.mortgage != nil {
+		bc.mortgage.Updates(counters)
+	}
 }
 
 // insertSidechain is called when an import batch hits upon a pruned ancestor
@@ -1479,6 +1581,9 @@ func (bc *BlockChain) reorg(oldBlock, newBlock *types.Block) error {
 		if len(oldChain) > 63 {
 			logFn = log.Warn
 		}
+		if bc.chainConfig.Algorand != nil {
+			logFn = log.Warn // we produce a warn anyway
+		}
 		logFn("Chain split detected", "number", commonBlock.Number(), "hash", commonBlock.Hash(),
 			"drop", len(oldChain), "dropfrom", oldChain[0].Hash(), "add", len(newChain), "addfrom", newChain[0].Hash())
 	} else {
@@ -1613,7 +1718,7 @@ Error: %v
 // because nonces can be verified sparsely, not needing to check each.
 func (bc *BlockChain) InsertHeaderChain(chain []*types.Header, checkFreq int) (int, error) {
 	start := time.Now()
-	if i, err := bc.hc.ValidateHeaderChain(chain, checkFreq); err != nil {
+	if i, err := bc.hc.ValidateHeaderChain(bc, chain, checkFreq); err != nil {
 		return i, err
 	}
 

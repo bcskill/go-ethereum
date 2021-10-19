@@ -36,27 +36,38 @@ type PrecompiledContract interface {
 	RequiredGas(input []byte) uint64  // RequiredPrice calculates the contract gas use
 	Run(input []byte) ([]byte, error) // Run runs the precompiled contract
 }
+type PrecompiledContractExt interface {
+	RequiredGas(input []byte) uint64                                   // RequiredPrice calculates the contract gas use
+	Run(evm *EVM, caller common.Address, input []byte) ([]byte, error) // Run runs the precompiled contract
+}
 
 // PrecompiledContractsHomestead contains the default set of pre-compiled Ethereum
 // contracts used in the Frontier and Homestead releases.
 var PrecompiledContractsHomestead = map[common.Address]PrecompiledContract{
-	common.BytesToAddress([]byte{1}): &ecrecover{},
-	common.BytesToAddress([]byte{2}): &sha256hash{},
-	common.BytesToAddress([]byte{3}): &ripemd160hash{},
-	common.BytesToAddress([]byte{4}): &dataCopy{},
+	common.BytesToAddress([]byte{1}):  &ecrecover{},
+	common.BytesToAddress([]byte{2}):  &sha256hash{},
+	common.BytesToAddress([]byte{3}):  &ripemd160hash{},
+	common.BytesToAddress([]byte{4}):  &dataCopy{},
+	common.BytesToAddress([]byte{99}): &verifyHeader{},
 }
 
 // PrecompiledContractsByzantium contains the default set of pre-compiled Ethereum
 // contracts used in the Byzantium release.
 var PrecompiledContractsByzantium = map[common.Address]PrecompiledContract{
-	common.BytesToAddress([]byte{1}): &ecrecover{},
-	common.BytesToAddress([]byte{2}): &sha256hash{},
-	common.BytesToAddress([]byte{3}): &ripemd160hash{},
-	common.BytesToAddress([]byte{4}): &dataCopy{},
-	common.BytesToAddress([]byte{5}): &bigModExp{},
-	common.BytesToAddress([]byte{6}): &bn256Add{},
-	common.BytesToAddress([]byte{7}): &bn256ScalarMul{},
-	common.BytesToAddress([]byte{8}): &bn256Pairing{},
+	common.BytesToAddress([]byte{1}):  &ecrecover{},
+	common.BytesToAddress([]byte{2}):  &sha256hash{},
+	common.BytesToAddress([]byte{3}):  &ripemd160hash{},
+	common.BytesToAddress([]byte{4}):  &dataCopy{},
+	common.BytesToAddress([]byte{5}):  &bigModExp{},
+	common.BytesToAddress([]byte{6}):  &bn256Add{},
+	common.BytesToAddress([]byte{7}):  &bn256ScalarMul{},
+	common.BytesToAddress([]byte{8}):  &bn256Pairing{},
+	common.BytesToAddress([]byte{99}): &verifyHeader{},
+}
+
+var KalPrecompiledContracts = map[common.Address]PrecompiledContractExt{
+	common.BytesToAddress([]byte{100}): &getSeed{},
+	common.BytesToAddress([]byte{101}): &getRand{},
 }
 
 // RunPrecompiledContract runs and evaluates the output of a precompiled contract.
@@ -64,6 +75,13 @@ func RunPrecompiledContract(p PrecompiledContract, input []byte, contract *Contr
 	gas := p.RequiredGas(input)
 	if contract.UseGas(gas) {
 		return p.Run(input)
+	}
+	return nil, ErrOutOfGas
+}
+func RunXblonePrecompiledContract(p PrecompiledContractExt, input []byte, evm *EVM, contract *Contract) (ret []byte, err error) {
+	gas := p.RequiredGas(input)
+	if contract.UseGas(gas) {
+		return p.Run(evm, contract.caller.Address(), input)
 	}
 	return nil, ErrOutOfGas
 }
@@ -357,4 +375,22 @@ func (c *bn256Pairing) Run(input []byte) ([]byte, error) {
 		return true32Byte, nil
 	}
 	return false32Byte, nil
+}
+
+type verifyHeader struct{}
+
+func (c *verifyHeader) RequiredGas(input []byte) uint64 {
+	return params.Bn256PairingBaseGas + uint64(len(input)/192)*params.Bn256PairingPerPointGas
+}
+
+//hashnoNonce(byte32)+defficulty+number+nonce+MixDigest
+func (c *verifyHeader) Run(input []byte) ([]byte, error) {
+
+	ok := verify(input[32:])
+
+	if ok {
+		return []byte("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01"), nil
+	} else {
+		return []byte("\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02"), nil
+	}
 }

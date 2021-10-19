@@ -94,7 +94,7 @@ func GetBodyRLP(ctx context.Context, odr OdrBackend, hash common.Hash, number ui
 	}
 }
 
-// GetBody retrieves the block body (transactons, uncles) corresponding to the
+// GetBody retrieves the block body (transactons, uncles, certifications) corresponding to the
 // hash.
 func GetBody(ctx context.Context, odr OdrBackend, hash common.Hash, number uint64) (*types.Body, error) {
 	data, err := GetBodyRLP(ctx, odr, hash, number)

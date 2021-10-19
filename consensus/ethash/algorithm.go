@@ -57,6 +57,9 @@ func cacheSize(block uint64) uint64 {
 	}
 	return calcCacheSize(epoch)
 }
+func CacheSize(block uint64) uint64 {
+	return cacheSize(block)
+}
 
 // calcCacheSize calculates the cache size for epoch. The cache size grows linearly,
 // however, we always take the highest prime below the linearly growing threshold in order
@@ -77,6 +80,9 @@ func datasetSize(block uint64) uint64 {
 		return datasetSizes[epoch]
 	}
 	return calcDatasetSize(epoch)
+}
+func DatasetSize(block uint64) uint64 {
+	return datasetSize(block)
 }
 
 // calcDatasetSize calculates the dataset size for epoch. The dataset size grows linearly,
@@ -205,6 +211,9 @@ func generateCache(dest []uint32, epoch uint64, seed []byte) {
 	if !isLittleEndian() {
 		swap(cache)
 	}
+}
+func GenerateCache(dest []uint32, epoch uint64, seed []byte) {
+	generateCache(dest, epoch, seed)
 }
 
 // swap changes the byte order of the buffer assuming a uint32 representation.
@@ -387,6 +396,11 @@ func hashimotoLight(size uint64, cache []uint32, hash []byte, nonce uint64) ([]b
 		return data
 	}
 	return hashimoto(hash, nonce, size, lookup)
+}
+
+// called by contract
+func HashimotoLight(size uint64, cache []uint32, hash []byte, nonce uint64) ([]byte, []byte) {
+	return hashimotoLight(size, cache, hash, nonce)
 }
 
 // hashimotoFull aggregates data from the full dataset (using the full in-memory

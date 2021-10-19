@@ -22,6 +22,8 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/syscon"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
@@ -73,6 +75,10 @@ type Message interface {
 	Nonce() uint64
 	CheckNonce() bool
 	Data() []byte
+	DataLen() int
+
+	// Hash returns a identity hash for message, which maybe not equals to each other in implementations.
+	Hash() common.Hash
 }
 
 // IntrinsicGas computes the 'intrinsic gas' for a message with the given data.
@@ -149,9 +155,18 @@ func (st *StateTransition) useGas(amount uint64) error {
 	return nil
 }
 
-func (st *StateTransition) buyGas() error {
+func (st *StateTransition) buyGas(contractPay bool, creator common.Address) error {
+	var payAddr common.Address
+
+	if contractPay {
+		payAddr = creator
+	} else {
+		payAddr = st.msg.From()
+	}
+
 	mgval := new(big.Int).Mul(new(big.Int).SetUint64(st.msg.Gas()), st.gasPrice)
-	if st.state.GetBalance(st.msg.From()).Cmp(mgval) < 0 {
+
+	if st.state.GetBalance(payAddr).Cmp(mgval) < 0 {
 		return errInsufficientBalanceForGas
 	}
 	if err := st.gp.SubGas(st.msg.Gas()); err != nil {
@@ -160,11 +175,11 @@ func (st *StateTransition) buyGas() error {
 	st.gas += st.msg.Gas()
 
 	st.initialGas = st.msg.Gas()
-	st.state.SubBalance(st.msg.From(), mgval)
+	st.state.SubBalance(payAddr, mgval)
 	return nil
 }
 
-func (st *StateTransition) preCheck() error {
+func (st *StateTransition) preCheck(contractPay bool, creator common.Address) error {
 	// Make sure this transaction's nonce is correct.
 	if st.msg.CheckNonce() {
 		nonce := st.state.GetNonce(st.msg.From())
@@ -174,14 +189,32 @@ func (st *StateTransition) preCheck() error {
 			return ErrNonceTooLow
 		}
 	}
-	return st.buyGas()
+
+	return st.buyGas(contractPay, creator)
 }
 
 // TransitionDb will transition the state by applying the current message and
 // returning the result including the used gas. It returns an error if failed.
 // An error indicates a consensus issue.
 func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bool, err error) {
-	if err = st.preCheck(); err != nil {
+	// 检查是否合约付费
+	var contractPay bool
+	var creator common.Address
+	var contractGas uint64
+
+	if st.msg.Gas() == 0 {
+		err, _, contractGas = syscon.ValidatePayByContract(st.state, st.msg.From(), st.msg)
+		if err != nil {
+			return nil, 0, false, err
+		}
+
+		contractPay = true
+
+		creator = syscon.CreatorOrSelf(st.state, st.msg.To())
+		st.msg = types.NewMessage(st.msg.From(), st.msg.To(), st.msg.Nonce(), st.msg.Value(), contractGas, st.msg.GasPrice(), st.msg.Data(), st.msg.CheckNonce())
+	}
+
+	if err = st.preCheck(contractPay, creator); err != nil {
 		return
 	}
 	msg := st.msg
@@ -221,23 +254,29 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 			return nil, 0, false, vmerr
 		}
 	}
-	st.refundGas()
+	st.refundGas(contractPay, creator)
 	st.state.AddBalance(st.evm.Coinbase, new(big.Int).Mul(new(big.Int).SetUint64(st.gasUsed()), st.gasPrice))
 
 	return ret, st.gasUsed(), vmerr != nil, err
 }
 
-func (st *StateTransition) refundGas() {
+func (st *StateTransition) refundGas(contractPay bool, creator common.Address) {
 	// Apply refund counter, capped to half of the used gas.
 	refund := st.gasUsed() / 2
 	if refund > st.state.GetRefund() {
 		refund = st.state.GetRefund()
 	}
 	st.gas += refund
+	var payAddr common.Address
+	if contractPay {
+		payAddr = creator
+	} else {
+		payAddr = st.msg.From()
+	}
 
 	// Return ETH for remaining gas, exchanged at the original rate.
 	remaining := new(big.Int).Mul(new(big.Int).SetUint64(st.gas), st.gasPrice)
-	st.state.AddBalance(st.msg.From(), remaining)
+	st.state.AddBalance(payAddr, remaining)
 
 	// Also return remaining gas to the block gas counter so it is
 	// available for the next transaction.

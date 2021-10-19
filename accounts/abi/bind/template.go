@@ -233,6 +233,11 @@ var (
 		return _{{$contract.Type}}.Contract.{{$contract.Type}}Transactor.contract.Transact(opts, method, params...)
 	}
 
+    // Transact invokes the (paid) contract method with params as input values, without autofill gas limit.
+	func (_{{$contract.Type}} *{{$contract.Type}}Raw) TransactExact(opts *bind.TransactOpts, method string, params ...interface{}) (*types.Transaction, error) {
+		return _{{$contract.Type}}.Contract.{{$contract.Type}}Transactor.contract.TransactExact(opts, method, params...)
+	}
+
 	// Call invokes the (constant) contract method with params as input values and
 	// sets the output to result. The result type might be a single field for simple
 	// returns, a slice of interfaces for anonymous returns and a struct for named

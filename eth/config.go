@@ -35,7 +35,7 @@ import (
 
 // DefaultConfig contains default settings for use on the Ethereum main net.
 var DefaultConfig = Config{
-	SyncMode: downloader.FastSync,
+	SyncMode: downloader.FullSync,
 	Ethash: ethash.Config{
 		CacheDir:       "ethash",
 		CachesInMem:    2,
@@ -43,22 +43,23 @@ var DefaultConfig = Config{
 		DatasetsInMem:  1,
 		DatasetsOnDisk: 2,
 	},
-	NetworkId:      1,
+	NetworkId:      888,
 	LightPeers:     100,
 	DatabaseCache:  512,
 	TrieCleanCache: 256,
 	TrieDirtyCache: 256,
 	TrieTimeout:    60 * time.Minute,
-	MinerGasFloor:  8000000,
-	MinerGasCeil:   8000000,
+	MinerGasFloor:  63000000,
+	MinerGasCeil:   630000000,
 	MinerGasPrice:  big.NewInt(params.GWei),
 	MinerRecommit:  3 * time.Second,
 
 	TxPool: core.DefaultTxPoolConfig,
 	GPO: gasprice.Config{
-		Blocks:     20,
+		Blocks:     100,
 		Percentile: 60,
 	},
+	GossipInterval: 100,
 }
 
 func init() {
@@ -132,6 +133,8 @@ type Config struct {
 
 	// Type of the EVM interpreter ("" for default)
 	EVMInterpreter string
+
+	GossipInterval int
 
 	// Constantinople block override (TODO: remove after the fork)
 	ConstantinopleOverride *big.Int

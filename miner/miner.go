@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
@@ -167,4 +168,14 @@ func (self *Miner) PendingBlock() *types.Block {
 func (self *Miner) SetEtherbase(addr common.Address) {
 	self.coinbase = addr
 	self.worker.setEtherbase(addr)
+}
+
+func (self *Miner) Protocols() []p2p.Protocol {
+	return nil
+}
+
+func (m *Miner) StartService() {
+}
+
+func (m *Miner) StopService() {
 }

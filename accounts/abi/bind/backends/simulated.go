@@ -24,6 +24,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/rlp"
+	"golang.org/x/crypto/sha3"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -418,6 +421,13 @@ func (m callmsg) GasPrice() *big.Int   { return m.CallMsg.GasPrice }
 func (m callmsg) Gas() uint64          { return m.CallMsg.Gas }
 func (m callmsg) Value() *big.Int      { return m.CallMsg.Value }
 func (m callmsg) Data() []byte         { return m.CallMsg.Data }
+func (m callmsg) DataLen() int         { return len(m.CallMsg.Data) }
+func (m callmsg) Hash() (h common.Hash) {
+	hw := sha3.NewLegacyKeccak256()
+	_ = rlp.Encode(hw, m.CallMsg)
+	hw.Sum(h[:0])
+	return h
+}
 
 // filterBackend implements filters.Backend to support filtering for logs without
 // taking bloom-bits acceleration structures into account.

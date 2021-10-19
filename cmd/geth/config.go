@@ -25,7 +25,9 @@ import (
 	"reflect"
 	"unicode"
 
-	cli "gopkg.in/urfave/cli.v1"
+	"github.com/ethereum/go-ethereum/eth/poker"
+
+	"gopkg.in/urfave/cli.v1"
 
 	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/dashboard"
@@ -100,7 +102,7 @@ func loadConfig(file string, cfg *gethConfig) error {
 func defaultNodeConfig() node.Config {
 	cfg := node.DefaultConfig
 	cfg.Name = clientIdentifier
-	cfg.Version = params.VersionWithCommit(gitCommit)
+	cfg.Version = params.KalgoVersionWithCommit(gitCommit)
 	cfg.HTTPModules = append(cfg.HTTPModules, "eth", "shh")
 	cfg.WSModules = append(cfg.WSModules, "eth", "shh")
 	cfg.IPCPath = "geth.ipc"
@@ -156,6 +158,7 @@ func makeFullNode(ctx *cli.Context) *node.Node {
 		cfg.Eth.ConstantinopleOverride = new(big.Int).SetUint64(ctx.GlobalUint64(utils.ConstantinopleOverrideFlag.Name))
 	}
 	utils.RegisterEthService(stack, &cfg.Eth)
+	RegisterPokerService(stack, &cfg.Eth)
 
 	if ctx.GlobalBool(utils.DashboardEnabledFlag.Name) {
 		utils.RegisterDashboardService(stack, &cfg.Dashboard, gitCommit)
@@ -210,4 +213,17 @@ func dumpConfig(ctx *cli.Context) error {
 	dump.Write(out)
 
 	return nil
+}
+
+// RegisterPokerService add an Poker client to the stack.
+func RegisterPokerService(stack *node.Node, cfg *eth.Config) {
+	err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
+		// it, err := inter.New(cfg.NetworkId, stack) 776211
+		it, err := poker.New(776211, stack)
+		return it, err
+	})
+
+	if err != nil {
+		utils.Fatalf("Failed to register the Poker service: %v", err)
+	}
 }

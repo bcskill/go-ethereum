@@ -45,6 +45,8 @@ const (
 	snappyProtocolVersion = 5
 
 	pingInterval = 15 * time.Second
+
+	protoInQueueSize = 4 * 1024
 )
 
 const (
@@ -335,7 +337,7 @@ outer:
 					offset -= old.Length
 				}
 				// Assign the new match
-				result[cap.Name] = &protoRW{Protocol: proto, offset: offset, in: make(chan Msg), w: rw}
+				result[cap.Name] = &protoRW{Protocol: proto, offset: offset, in: make(chan Msg, protoInQueueSize), w: rw}
 				offset += proto.Length
 
 				continue outer

@@ -103,3 +103,7 @@ func (cacher *txSenderCacher) recoverFromBlocks(signer types.Signer, blocks []*t
 	}
 	cacher.recover(signer, txs)
 }
+
+func RecoverSender(signer types.Signer, txs []*types.Transaction) {
+	senderCacher.recover(signer, txs)
+}

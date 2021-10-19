@@ -55,6 +55,9 @@ type Genesis struct {
 	Coinbase   common.Address      `json:"coinbase"`
 	Alloc      GenesisAlloc        `json:"alloc"      gencodec:"required"`
 
+	TotalBalanceOfMiners *big.Int `json:"totalBalanceOfMiners"`
+	Seed                 []byte   `json:"seed"`
+
 	// These fields are used for consensus tests. Please don't use them
 	// in actual genesis blocks.
 	Number     uint64      `json:"number"`
@@ -96,6 +99,9 @@ type genesisSpecMarshaling struct {
 	Number     math.HexOrDecimal64
 	Difficulty *math.HexOrDecimal256
 	Alloc      map[common.UnprefixedAddress]GenesisAccount
+
+	TotalBalanceOfMiners *math.HexOrDecimal256
+	SigParentSeed        hexutil.Bytes
 }
 
 type genesisAccountMarshaling struct {
@@ -162,12 +168,17 @@ func SetupGenesisBlockWithOverride(db ethdb.Database, genesis *Genesis, constant
 	if (stored == common.Hash{}) {
 		if genesis == nil {
 			log.Info("Writing default main-net genesis block")
-			genesis = DefaultGenesisBlock()
+			//genesis = DefaultGenesisBlock()
+			genesis = DefaultethereumGenesisBlock()
 		} else {
 			log.Info("Writing custom genesis block")
 		}
 		block, err := genesis.Commit(db)
-		return genesis.Config, block.Hash(), err
+		var hash common.Hash
+		if block != nil {
+			hash = block.Hash()
+		}
+		return genesis.Config, hash, err
 	}
 
 	// Check whether the genesis block is already written.
@@ -242,7 +253,6 @@ func (g *Genesis) ToBlock(db ethdb.Database) *types.Block {
 	root := statedb.IntermediateRoot(false)
 	head := &types.Header{
 		Number:     new(big.Int).SetUint64(g.Number),
-		Nonce:      types.EncodeNonce(g.Nonce),
 		Time:       g.Timestamp,
 		ParentHash: g.ParentHash,
 		Extra:      g.ExtraData,
@@ -252,13 +262,21 @@ func (g *Genesis) ToBlock(db ethdb.Database) *types.Block {
 		MixDigest:  g.Mixhash,
 		Coinbase:   g.Coinbase,
 		Root:       root,
+
+		TotalBalanceOfMiners: g.TotalBalanceOfMiners,
 	}
+	head.SetVersion(g.Nonce)
+	head.Certificate = new(types.Certificate)
 	if g.GasLimit == 0 {
 		head.GasLimit = params.GenesisGasLimit
 	}
 	if g.Difficulty == nil {
 		head.Difficulty = params.GenesisDifficulty
 	}
+	if len(g.Seed) != len(head.Seed()) {
+		panic("invalid seed or seed proof in genesis")
+	}
+	head.SetSeedBytes(g.Seed)
 	statedb.Commit(false)
 	statedb.Database().TrieDB().Commit(root, true)
 
@@ -303,6 +321,50 @@ func GenesisBlockForTesting(db ethdb.Database, addr common.Address, balance *big
 	return g.MustCommit(db)
 }
 
+// DefaultethereumGenesisBlock returns the ethereum main net genesis block.
+func DefaultethereumGenesisBlock() *Genesis {
+	return &Genesis{
+		Config:               params.EthereumMainnetChainConfig,
+		Nonce:                params.ConsensusVersion,
+		Timestamp:            1561878357,
+		ExtraData:            hexutil.MustDecode("0x6b616c6569646f"),
+		GasLimit:             63000000,
+		Difficulty:           big.NewInt(0),
+		TotalBalanceOfMiners: ethereumMainnetGenesisBalance,
+		Seed:                 hexutil.MustDecode("0x21bdecb9be97141771ff677cff15f34c8b97be9a94a7b26448a308e4a9f1d648"),
+		Alloc:                ethereumMainnetAllocData,
+	}
+}
+
+// DefaultethereumTestnetGenesisBlock returns the ethereum test net genesis block.
+func DefaultethereumTestnetGenesisBlock() *Genesis {
+	return &Genesis{
+		Config:               params.EthereumTestnetChainConfig,
+		Nonce:                params.ConsensusVersion,
+		Timestamp:            1561544891,
+		ExtraData:            hexutil.MustDecode("0x6b616c6569646f"),
+		GasLimit:             63000000,
+		Difficulty:           big.NewInt(0),
+		TotalBalanceOfMiners: ethereumTestnetGenesisBalance,
+		Seed:                 hexutil.MustDecode("0x3b2cf2c1df1773338a3b8f3a94c843a3b2b38a02b1683ff4bbe4b94dfdf553a1"),
+		Alloc:                ethereumTestnetAllocData,
+	}
+}
+
+// DefaultethereumDevnetGenesisBlock returns the ethereum dev net genesis block.
+func DefaultethereumDevnetGenesisBlock() *Genesis {
+	return &Genesis{
+		Config:               params.EthereumDevnetChainConfig,
+		Nonce:                params.ConsensusVersion,
+		ExtraData:            hexutil.MustDecode("0x6b616c6569646f"),
+		GasLimit:             63000000,
+		Difficulty:           big.NewInt(0),
+		TotalBalanceOfMiners: big.NewInt(5000000000000000000),
+		Seed:                 hexutil.MustDecode("0x1f01def907780305191f4dc82a8f0558e14f6035bcb5ba9a8be1cee962ce9568"),
+		Alloc:                nil,
+	}
+}
+
 // DefaultGenesisBlock returns the Ethereum main net genesis block.
 func DefaultGenesisBlock() *Genesis {
 	return &Genesis{
@@ -311,7 +373,7 @@ func DefaultGenesisBlock() *Genesis {
 		ExtraData:  hexutil.MustDecode("0x11bbe8db4e347b4e8c937c1c8370e4b5ed33adb3db69cbdb7a38e1e50b1b82fa"),
 		GasLimit:   5000,
 		Difficulty: big.NewInt(17179869184),
-		Alloc:      decodePrealloc(mainnetAllocData),
+		Alloc:      nil,
 	}
 }
 
@@ -323,7 +385,7 @@ func DefaultTestnetGenesisBlock() *Genesis {
 		ExtraData:  hexutil.MustDecode("0x3535353535353535353535353535353535353535353535353535353535353535"),
 		GasLimit:   16777216,
 		Difficulty: big.NewInt(1048576),
-		Alloc:      decodePrealloc(testnetAllocData),
+		Alloc:      nil,
 	}
 }
 
@@ -335,7 +397,7 @@ func DefaultRinkebyGenesisBlock() *Genesis {
 		ExtraData:  hexutil.MustDecode("0x52657370656374206d7920617574686f7269746168207e452e436172746d616e42eb768f2244c8811c63729a21a3569731535f067ffc57839b00206d1ad20c69a1981b489f772031b279182d99e65703f0076e4812653aab85fca0f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"),
 		GasLimit:   4700000,
 		Difficulty: big.NewInt(1),
-		Alloc:      decodePrealloc(rinkebyAllocData),
+		Alloc:      nil,
 	}
 }
 

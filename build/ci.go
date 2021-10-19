@@ -60,7 +60,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/internal/build"
 	"github.com/ethereum/go-ethereum/params"
-	sv "github.com/ethereum/go-ethereum/swarm/version"
 )
 
 var (
@@ -80,12 +79,6 @@ var (
 		executablePath("puppeth"),
 		executablePath("rlpdump"),
 		executablePath("wnode"),
-	}
-
-	// Files that end up in the swarm*.zip archive.
-	swarmArchiveFiles = []string{
-		"COPYING",
-		executablePath("swarm"),
 	}
 
 	// A debian package is created for all executables listed here.
@@ -120,35 +113,19 @@ var (
 		},
 	}
 
-	// A debian package is created for all executables listed here.
-	debSwarmExecutables = []debExecutable{
-		{
-			BinaryName:  "swarm",
-			PackageName: "ethereum-swarm",
-			Description: "Ethereum Swarm daemon and tools",
-		},
-	}
-
 	debEthereum = debPackage{
 		Name:        "ethereum",
 		Version:     params.Version,
 		Executables: debExecutables,
 	}
 
-	debSwarm = debPackage{
-		Name:        "ethereum-swarm",
-		Version:     sv.Version,
-		Executables: debSwarmExecutables,
-	}
-
 	// Debian meta packages to build and push to Ubuntu PPA
 	debPackages = []debPackage{
-		debSwarm,
 		debEthereum,
 	}
 
 	// Packages to be cross-compiled by the xgo command
-	allCrossCompiledArchiveFiles = append(allToolsArchiveFiles, swarmArchiveFiles...)
+	allCrossCompiledArchiveFiles = allToolsArchiveFiles
 
 	// Distros for which packages are created.
 	// Note: vivid is unsupported because there is no golang-1.6 package for it.
@@ -194,6 +171,10 @@ func main() {
 		doAndroidArchive(os.Args[2:])
 	case "xcode":
 		doXCodeFramework(os.Args[2:])
+	case "aar_gengine":
+		doAndroidGengineArchive(os.Args[2:])
+	case "xcode_gengine":
+		doXCodeGengineFramework(os.Args[2:])
 	case "xgo":
 		doXgo(os.Args[2:])
 	case "purge":
@@ -403,9 +384,6 @@ func doArchive(cmdline []string) {
 		basegeth = archiveBasename(*arch, params.ArchiveVersion(env.Commit))
 		geth     = "geth-" + basegeth + ext
 		alltools = "geth-alltools-" + basegeth + ext
-
-		baseswarm = archiveBasename(*arch, sv.ArchiveVersion(env.Commit))
-		swarm     = "swarm-" + baseswarm + ext
 	)
 	maybeSkipArchive(env)
 	if err := build.WriteArchive(geth, gethArchiveFiles); err != nil {
@@ -414,10 +392,7 @@ func doArchive(cmdline []string) {
 	if err := build.WriteArchive(alltools, allToolsArchiveFiles); err != nil {
 		log.Fatal(err)
 	}
-	if err := build.WriteArchive(swarm, swarmArchiveFiles); err != nil {
-		log.Fatal(err)
-	}
-	for _, archive := range []string{geth, alltools, swarm} {
+	for _, archive := range []string{geth, alltools} {
 		if err := archiveUpload(archive, *upload, *signer); err != nil {
 			log.Fatal(err)
 		}
@@ -850,6 +825,70 @@ func doAndroidArchive(cmdline []string) {
 	}
 }
 
+func doAndroidGengineArchive(cmdline []string) {
+	var (
+		local  = flag.Bool("local", false, `Flag whether we're only doing a local build (skip Maven artifacts)`)
+		signer = flag.String("signer", "", `Environment variable holding the signing key (e.g. ANDROID_SIGNING_KEY)`)
+		deploy = flag.String("deploy", "", `Destination to deploy the archive (usually "https://oss.sonatype.org")`)
+		upload = flag.String("upload", "", `Destination to upload the archive (usually "gethstore/builds")`)
+	)
+	flag.CommandLine.Parse(cmdline)
+	env := build.Env()
+
+	// Sanity check that the SDK and NDK are installed and set
+	if os.Getenv("ANDROID_HOME") == "" {
+		log.Fatal("Please ensure ANDROID_HOME points to your Android SDK")
+	}
+	if os.Getenv("ANDROID_NDK") == "" {
+		log.Fatal("Please ensure ANDROID_NDK points to your Android NDK")
+	}
+	// Build the Android archive and Maven resources
+	build.MustRun(goTool("get", "golang.org/x/mobile/cmd/gomobile", "golang.org/x/mobile/cmd/gobind"))
+	build.MustRun(gomobileTool("init", "--ndk", os.Getenv("ANDROID_NDK")))
+	build.MustRun(gomobileTool("bind", "-ldflags", "-s -w", "--target", "android", "--javapkg", "io.kaleidochain", "-v", "github.com/ethereum/go-ethereum/mobile_gengine"))
+
+	if *local {
+		// If we're building locally, copy bundle to build dir and skip Maven
+		os.Rename("gengine.aar", filepath.Join(GOBIN, "gengine.aar"))
+		return
+	}
+	meta := newMavenMetadata(env)
+	build.Render("build/mvn.pom", meta.Package+".pom", 0755, meta)
+
+	// Skip Maven deploy and Azure upload for PR builds
+	maybeSkipArchive(env)
+
+	// Sign and upload the archive to Azure
+	archive := "gengine-" + archiveBasename("android", params.ArchiveVersion(env.Commit)) + ".aar"
+	os.Rename("gengine.aar", archive)
+
+	if err := archiveUpload(archive, *upload, *signer); err != nil {
+		log.Fatal(err)
+	}
+	// Sign and upload all the artifacts to Maven Central
+	os.Rename(archive, meta.Package+".aar")
+	if *signer != "" && *deploy != "" {
+		// Import the signing key into the local GPG instance
+		key := getenvBase64(*signer)
+		gpg := exec.Command("gpg", "--import")
+		gpg.Stdin = bytes.NewReader(key)
+		build.MustRun(gpg)
+		keyID, err := build.PGPKeyID(string(key))
+		if err != nil {
+			log.Fatal(err)
+		}
+		// Upload the artifacts to Sonatype and/or Maven Central
+		repo := *deploy + "/service/local/staging/deploy/maven2"
+		if meta.Develop {
+			repo = *deploy + "/content/repositories/snapshots"
+		}
+		build.MustRunCommand("mvn", "gpg:sign-and-deploy-file", "-e", "-X",
+			"-settings=build/mvn.settings", "-Durl="+repo, "-DrepositoryId=ossrh",
+			"-Dgpg.keyname="+keyID,
+			"-DpomFile="+meta.Package+".pom", "-Dfile="+meta.Package+".aar")
+	}
+}
+
 func gomobileTool(subcmd string, args ...string) *exec.Cmd {
 	cmd := exec.Command(filepath.Join(GOBIN, "gomobile"), subcmd)
 	cmd.Args = append(cmd.Args, args...)
@@ -953,8 +992,52 @@ func doXCodeFramework(cmdline []string) {
 	// Prepare and upload a PodSpec to CocoaPods
 	if *deploy != "" {
 		meta := newPodMetadata(env, archive)
-		build.Render("build/pod.podspec", "Geth.podspec", 0755, meta)
-		build.MustRunCommand("pod", *deploy, "push", "Geth.podspec", "--allow-warnings", "--verbose")
+		build.Render("build/pod.podspec", "Kalgo.podspec", 0755, meta)
+		build.MustRunCommand("pod", *deploy, "push", "Kalgo.podspec", "--allow-warnings", "--verbose")
+	}
+}
+
+func doXCodeGengineFramework(cmdline []string) {
+	var (
+		local  = flag.Bool("local", false, `Flag whether we're only doing a local build (skip Maven artifacts)`)
+		signer = flag.String("signer", "", `Environment variable holding the signing key (e.g. IOS_SIGNING_KEY)`)
+		deploy = flag.String("deploy", "", `Destination to deploy the archive (usually "trunk")`)
+		upload = flag.String("upload", "", `Destination to upload the archives (usually "gethstore/builds")`)
+	)
+	flag.CommandLine.Parse(cmdline)
+	env := build.Env()
+
+	// Build the iOS XCode framework
+	build.MustRun(goTool("get", "golang.org/x/mobile/cmd/gomobile", "golang.org/x/mobile/cmd/gobind"))
+	build.MustRun(gomobileTool("init"))
+	bind := gomobileTool("bind", "-ldflags", "-s -w", "--target", "ios", "--tags", "ios", "-v", "github.com/ethereum/go-ethereum/mobile_gengine")
+
+	if *local {
+		// If we're building locally, use the build folder and stop afterwards
+		bind.Dir, _ = filepath.Abs(GOBIN)
+		build.MustRun(bind)
+		return
+	}
+	archive := "gengine-" + archiveBasename("ios", params.ArchiveVersion(env.Commit))
+	if err := os.Mkdir(archive, os.ModePerm); err != nil {
+		log.Fatal(err)
+	}
+	bind.Dir, _ = filepath.Abs(archive)
+	build.MustRun(bind)
+	build.MustRunCommand("tar", "-zcvf", archive+".tar.gz", archive)
+
+	// Skip CocoaPods deploy and Azure upload for PR builds
+	maybeSkipArchive(env)
+
+	// Sign and upload the framework to Azure
+	if err := archiveUpload(archive+".tar.gz", *upload, *signer); err != nil {
+		log.Fatal(err)
+	}
+	// Prepare and upload a PodSpec to CocoaPods
+	if *deploy != "" {
+		meta := newPodMetadata(env, archive)
+		build.Render("build/pod.podspec", "Gengine.podspec", 0755, meta)
+		build.MustRunCommand("pod", *deploy, "push", "Gengine.podspec", "--allow-warnings", "--verbose")
 	}
 }
 

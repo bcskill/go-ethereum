@@ -894,6 +894,11 @@ func RPCMarshalBlock(b *types.Block, inclTx bool, fullTx bool) (map[string]inter
 		"timestamp":        hexutil.Uint64(head.Time),
 		"transactionsRoot": head.TxHash,
 		"receiptsRoot":     head.ReceiptHash,
+
+		"version":              hexutil.Uint64(head.Version()),
+		"totalBalanceOfMiners": (*hexutil.Big)(head.TotalBalanceOfMiners),
+		"seed":                 hexutil.Bytes(head.SeedBytes()),
+		"proposer":             head.Certificate.Proposer(),
 	}
 
 	if inclTx {
@@ -1038,6 +1043,12 @@ func (s *PublicTransactionPoolAPI) GetBlockTransactionCountByNumber(ctx context.
 		return &n
 	}
 	return nil
+}
+
+// GetTxPoolPendingTransactionsCount returns the number of transactions in txpool pending.
+func (s *PublicTransactionPoolAPI) GetTxPoolPendingTransactionsCount(ctx context.Context) *hexutil.Uint {
+	n := hexutil.Uint(s.b.GetPoolTransactionsCount())
+	return &n
 }
 
 // GetBlockTransactionCountByHash returns the number of transactions in the block with the given hash.

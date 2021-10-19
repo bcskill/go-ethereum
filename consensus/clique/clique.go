@@ -242,6 +242,10 @@ func (c *Clique) Author(header *types.Header) (common.Address, error) {
 	return ecrecover(header, c.signatures)
 }
 
+func (c *Clique) Coinbase(header *types.Header) common.Address {
+	return header.Coinbase
+}
+
 // VerifyHeader checks whether a header conforms to the consensus rules.
 func (c *Clique) VerifyHeader(chain consensus.ChainReader, header *types.Header, seal bool) error {
 	return c.verifyHeader(chain, header, nil)
@@ -463,7 +467,7 @@ func (c *Clique) VerifyUncles(chain consensus.ChainReader, block *types.Block) e
 
 // VerifySeal implements consensus.Engine, checking whether the signature contained
 // in the header satisfies the consensus protocol requirements.
-func (c *Clique) VerifySeal(chain consensus.ChainReader, header *types.Header) error {
+func (c *Clique) VerifySeal(chain consensus.ChainReader, header, parent *types.Header) error {
 	return c.verifySeal(chain, header, nil)
 }
 

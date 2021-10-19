@@ -18,10 +18,16 @@
 package state
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/big"
 	"sort"
+	"sync"
+
+	"github.com/ethereum/go-ethereum/params"
+
+	"github.com/ethereum/go-ethereum/ethdb"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -86,6 +92,10 @@ type StateDB struct {
 	journal        *journal
 	validRevisions []revision
 	nextRevisionId int
+
+	minerTracker *MinerTracker
+
+	lock sync.Mutex
 }
 
 // Create a new state from a given trie.
@@ -103,6 +113,16 @@ func New(root common.Hash, db Database) (*StateDB, error) {
 		preimages:         make(map[common.Hash][]byte),
 		journal:           newJournal(),
 	}, nil
+}
+
+// EnableMinerTracker enables the tracker of miners' balance
+func (self *StateDB) EnableMinerTracker(config *params.AlgorandConfig, height uint64, totalBalanceOfMiners *big.Int) {
+	self.minerTracker = NewMinerTracker(config, self, height, totalBalanceOfMiners)
+}
+
+// TotalBalanceOfMiners returns tracking result
+func (self *StateDB) TotalBalanceOfMiners() *big.Int {
+	return self.minerTracker.TotalBalance(self)
 }
 
 // setError remembers the first non-nil error it is called with.
@@ -244,6 +264,19 @@ func (self *StateDB) GetCodeSize(addr common.Address) int {
 	return size
 }
 
+func (self *StateDB) HasCode(addr common.Address) bool {
+	stateObject := self.getStateObject(addr)
+	if stateObject == nil {
+		return false
+	}
+
+	if bytes.Equal(stateObject.CodeHash(), emptyCodeHash) {
+		return false
+	}
+
+	return true
+}
+
 func (self *StateDB) GetCodeHash(addr common.Address) common.Hash {
 	stateObject := self.getStateObject(addr)
 	if stateObject == nil {
@@ -277,6 +310,20 @@ func (self *StateDB) GetStorageProof(a common.Address, key common.Hash) ([][]byt
 	}
 	err := trie.Prove(crypto.Keccak256(key.Bytes()), 0, &proof)
 	return [][]byte(proof), err
+}
+
+// Prove constructs the MerkleProof for a given Account
+func (self *StateDB) Prove(a common.Address, fromLevel uint, proofDb ethdb.Putter) error {
+	return self.trie.Prove(crypto.Keccak256(a.Bytes()), fromLevel, proofDb)
+}
+
+// StorageProve constructs the StorageProof for given key of a given Account
+func (self *StateDB) StorageProve(a common.Address, key common.Hash, fromLevel uint, proofDb ethdb.Putter) error {
+	trie := self.StorageTrie(a)
+	if trie == nil {
+		return errors.New("storage trie for requested address does not exist")
+	}
+	return trie.Prove(crypto.Keccak256(key.Bytes()), fromLevel, proofDb)
 }
 
 // GetCommittedState retrieves a value from the given account's committed storage trie.
@@ -429,6 +476,15 @@ func (self *StateDB) getStateObject(addr common.Address) (stateObject *stateObje
 	return obj
 }
 
+func (self *StateDB) GetStateObjectRoot(addr common.Address) common.Hash {
+	obj := self.getStateObject(addr)
+	if obj == nil {
+		return common.Hash{}
+	}
+
+	return obj.data.Root
+}
+
 func (self *StateDB) setStateObject(object *stateObject) {
 	self.stateObjects[object.Address()] = object
 }
@@ -505,6 +561,8 @@ func (self *StateDB) Copy() *StateDB {
 		preimages:         make(map[common.Hash][]byte),
 		journal:           newJournal(),
 	}
+	state.minerTracker = self.minerTracker.Copy()
+
 	// Copy the dirty states, logs, and preimages
 	for addr := range self.journal.dirties {
 		// As documented [here](https://github.com/ethereum/go-ethereum/pull/16485#issuecomment-380438527),
@@ -590,6 +648,30 @@ func (s *StateDB) Finalise(deleteEmptyObjects bool) {
 			s.updateStateObject(stateObject)
 		}
 		s.stateObjectsDirty[addr] = struct{}{}
+
+	}
+	for _, entry := range s.journal.entries {
+		if s.minerTracker == nil {
+			break
+		}
+
+		var addr *common.Address
+
+		switch e := entry.(type) {
+		case balanceChange:
+			addr = e.dirtied()
+		case suicideChange:
+			addr = e.dirtied()
+		}
+
+		if addr != nil {
+			_, exist := s.stateObjects[*addr]
+			if !exist {
+				// see above
+				continue
+			}
+			s.minerTracker.SetDirty(*addr)
+		}
 	}
 	// Invalidate journal because reverting across transactions is not allowed.
 	s.clearJournalAndRefund()
@@ -664,4 +746,99 @@ func (s *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) 
 	})
 	log.Debug("Trie cache stats after commit", "misses", trie.CacheMisses(), "unloads", trie.CacheUnloads())
 	return root, err
+}
+
+// MinerTracker is a tracker for balance change
+// Note: we only need track miners before current block, miners of current block do NOT track!
+type MinerTracker struct {
+	config               *params.AlgorandConfig
+	initialState         *StateDB
+	height               uint64
+	totalBalanceOfMiners *big.Int
+	objectsDirty         map[common.Address]struct{}
+}
+
+func NewMinerTracker(config *params.AlgorandConfig, initialState *StateDB, height uint64, totalBalanceOfMiners *big.Int) *MinerTracker {
+	return &MinerTracker{
+		config:               config,
+		initialState:         initialState.Copy(),
+		height:               height,
+		totalBalanceOfMiners: totalBalanceOfMiners,
+		objectsDirty:         make(map[common.Address]struct{}),
+	}
+}
+
+func (tracker *MinerTracker) Copy() *MinerTracker {
+	if tracker == nil {
+		return nil
+	}
+
+	cpy := *tracker
+	cpy.objectsDirty = make(map[common.Address]struct{}, len(tracker.objectsDirty))
+	for k, v := range tracker.objectsDirty {
+		cpy.objectsDirty[k] = v
+	}
+
+	return &cpy
+}
+
+func (tracker *MinerTracker) SetDirty(addr common.Address) {
+	tracker.objectsDirty[addr] = struct{}{}
+}
+
+func (tracker *MinerTracker) TotalBalance(finalState *StateDB) *big.Int {
+	if tracker == nil {
+		return common.Big0
+	}
+
+	minerContract := NewMinerContract(tracker.config)
+
+	// remember that we are calculating balance for next height
+	nextHeight := tracker.height + 1
+	totalBalanceOfMiners := new(big.Int).SetUint64(0)
+
+	// sums up BN(H+1)
+	newMiners := minerContract.NewAddedMiners(finalState, nextHeight)
+	for _, miner := range newMiners {
+		newBalance := GetBalanceWithFund(finalState, miner)
+
+		totalBalanceOfMiners.Add(totalBalanceOfMiners, newBalance)
+
+		log.Trace("totalBalanceOfMiners new miner added for next height", "nextHeight", nextHeight, "addr", miner, "newBalance", newBalance, "BalanceTotal", totalBalanceOfMiners)
+	}
+	log.Trace("totalBalanceOfMiners = BN(H+1)", "nextHeight", nextHeight, "result", totalBalanceOfMiners)
+
+	if tracker.config.GetIntervalSn(nextHeight) == tracker.config.GetIntervalSn(tracker.height) {
+		// sums up B(H)
+		totalBalanceOfMiners.Add(totalBalanceOfMiners, tracker.totalBalanceOfMiners)
+		log.Trace("totalBalanceOfMiners = BN(H+1) + B(H)", "nextHeight", nextHeight, "result", totalBalanceOfMiners)
+
+		// sums up BD(H)
+		for addr := range tracker.objectsDirty {
+			if !minerContract.IsMinerOf(tracker.initialState, tracker.height, addr) {
+				continue
+			}
+
+			// Because fund can ONLY be add/sub by owner, so the fund changes, the owner's balance must changes.
+			// So we can update balance only by changes of owner's state.
+			beforeBalance := GetBalanceWithFund(tracker.initialState, addr)
+			afterBalance := GetBalanceWithFund(finalState, addr)
+
+			totalBalanceOfMiners.Add(totalBalanceOfMiners, afterBalance)
+			totalBalanceOfMiners.Sub(totalBalanceOfMiners, beforeBalance)
+
+			log.Trace("totalBalanceOfMiners dirty addr is miner", "addr", addr,
+				"beforeBalance", beforeBalance, "afterBalance", afterBalance,
+				"newBalanceTotal", totalBalanceOfMiners)
+		}
+		log.Trace("totalBalanceOfMiners = BN(H+1) + B(H) + BD(H)", "nextHeight", nextHeight, "result", totalBalanceOfMiners)
+	}
+
+	log.Debug("totalBalanceOfMiners generated for next block", "nextHeight", nextHeight, "totalBalance", totalBalanceOfMiners)
+
+	if totalBalanceOfMiners.Cmp(common.Big0) == 0 {
+		panic(fmt.Sprintf("totalBalanceOfMiners must not be 0, next height:%d", nextHeight))
+	}
+
+	return totalBalanceOfMiners
 }

@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ethereum/go-ethereum/crypto/ed25519"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/params"
@@ -38,6 +40,7 @@ type (
 	// GetHashFunc returns the nth block hash in the blockchain
 	// and is used by the BLOCKHASH EVM op code.
 	GetHashFunc func(uint64) common.Hash
+	GetSeedFunc func(uint64) (ed25519.VrfOutput256, uint)
 )
 
 // run runs the given contract and takes care of running precompiles with a fallback to the byte code interpreter.
@@ -49,6 +52,9 @@ func run(evm *EVM, contract *Contract, input []byte, readOnly bool) ([]byte, err
 		}
 		if p := precompiles[*contract.CodeAddr]; p != nil {
 			return RunPrecompiledContract(p, input, contract)
+		} else if p := KalPrecompiledContracts[*contract.CodeAddr]; p != nil {
+
+			return RunXblonePrecompiledContract(p, input, evm, contract)
 		}
 	}
 	for _, interpreter := range evm.interpreters {
@@ -77,7 +83,7 @@ type Context struct {
 	Transfer TransferFunc
 	// GetHash returns the hash corresponding to n
 	GetHash GetHashFunc
-
+	GetSeed GetSeedFunc
 	// Message information
 	Origin   common.Address // Provides information for ORIGIN
 	GasPrice *big.Int       // Provides information for GASPRICE
@@ -88,6 +94,9 @@ type Context struct {
 	BlockNumber *big.Int       // Provides information for NUMBER
 	Time        *big.Int       // Provides information for TIME
 	Difficulty  *big.Int       // Provides information for DIFFICULTY
+
+	// Random context
+	TxHash common.Hash
 }
 
 // EVM is the Ethereum Virtual Machine base object and provides
@@ -391,6 +400,7 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	// Create a new account on the state
 	snapshot := evm.StateDB.Snapshot()
 	evm.StateDB.CreateAccount(address)
+	setContractCreator(evm.StateDB, address, caller.Address())
 	if evm.ChainConfig().IsEIP158(evm.BlockNumber) {
 		evm.StateDB.SetNonce(address, 1)
 	}

@@ -1078,3 +1078,7 @@ func (srv *Server) PeersInfo() []*PeerInfo {
 	}
 	return infos
 }
+
+func (srv *Server) Resolve(node *enode.Node) *enode.Node {
+	return srv.ntab.Resolve(node)
+}

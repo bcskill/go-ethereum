@@ -2,24 +2,20 @@
 # with Go source code. If you know what GOPATH is then you probably
 # don't need to bother with make.
 
-.PHONY: geth android ios geth-cross swarm evm all test clean
+.PHONY: geth android ios geth-cross evm all test clean
 .PHONY: geth-linux geth-linux-386 geth-linux-amd64 geth-linux-mips64 geth-linux-mips64le
 .PHONY: geth-linux-arm geth-linux-arm-5 geth-linux-arm-6 geth-linux-arm-7 geth-linux-arm64
 .PHONY: geth-darwin geth-darwin-386 geth-darwin-amd64
 .PHONY: geth-windows geth-windows-386 geth-windows-amd64
+.PHONY: deplibs
 
 GOBIN = $(shell pwd)/build/bin
 GO ?= latest
 
 geth:
-	build/env.sh go run build/ci.go install ./cmd/geth
+	sh build/env.sh go run build/ci.go install ./cmd/geth
 	@echo "Done building."
 	@echo "Run \"$(GOBIN)/geth\" to launch geth."
-
-swarm:
-	build/env.sh go run build/ci.go install ./cmd/swarm
-	@echo "Done building."
-	@echo "Run \"$(GOBIN)/swarm\" to launch swarm."
 
 all:
 	build/env.sh go run build/ci.go install
@@ -56,9 +52,6 @@ devtools:
 	@type "npm" 2> /dev/null || echo 'Please install node.js and npm'
 	@type "solc" 2> /dev/null || echo 'Please install solc'
 	@type "protoc" 2> /dev/null || echo 'Please install protoc'
-
-swarm-devtools:
-	env GOBIN= go install ./cmd/swarm/mimegen
 
 # Cross Compilation Targets (xgo)
 
@@ -151,3 +144,12 @@ geth-windows-amd64:
 	build/env.sh go run build/ci.go xgo -- --go=$(GO) --targets=windows/amd64 -v ./cmd/geth
 	@echo "Windows amd64 cross compilation done:"
 	@ls -ld $(GOBIN)/geth-windows-* | grep amd64
+
+crypto/ed25519/lib/libsodium.a:
+	$(MAKE) -C crypto/ed25519 lib/libsodium.a
+
+deplibs: crypto/ed25519/lib/libsodium.a
+
+clean-deplibs:
+	$(MAKE) -C crypto/ed25519 clean
+

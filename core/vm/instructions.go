@@ -561,7 +561,7 @@ func opGasprice(pc *uint64, interpreter *EVMInterpreter, contract *Contract, mem
 func opBlockhash(pc *uint64, interpreter *EVMInterpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	num := stack.pop()
 
-	n := interpreter.intPool.get().Sub(interpreter.evm.BlockNumber, common.Big257)
+	n := interpreter.intPool.get().Sub(interpreter.evm.BlockNumber, common.Big2049)
 	if num.Cmp(n) > 0 && num.Cmp(interpreter.evm.BlockNumber) < 0 {
 		stack.push(interpreter.evm.GetHash(num.Uint64()).Big())
 	} else {
@@ -881,6 +881,7 @@ func opStop(pc *uint64, interpreter *EVMInterpreter, contract *Contract, memory 
 func opSuicide(pc *uint64, interpreter *EVMInterpreter, contract *Contract, memory *Memory, stack *Stack) ([]byte, error) {
 	balance := interpreter.evm.StateDB.GetBalance(contract.Address())
 	interpreter.evm.StateDB.AddBalance(common.BigToAddress(stack.pop()), balance)
+	deleteFromCreator(interpreter.evm.StateDB, contract.Address())
 
 	interpreter.evm.StateDB.Suicide(contract.Address())
 	return nil, nil

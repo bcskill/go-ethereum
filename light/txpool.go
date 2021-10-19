@@ -19,6 +19,7 @@ package light
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"sync"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state"
+	"github.com/ethereum/go-ethereum/core/syscon"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/event"
@@ -111,7 +113,8 @@ func NewTxPool(config *params.ChainConfig, chain *LightChain, relay TxRelayBacke
 
 // currentState returns the light state of the current head header
 func (pool *TxPool) currentState(ctx context.Context) *state.StateDB {
-	return NewState(ctx, pool.chain.CurrentHeader(), pool.odr)
+	statedb, _ := NewState(ctx, pool.chain.CurrentHeader(), pool.odr)
+	return statedb
 }
 
 // GetNonce returns the "pending" nonce of a given address. It always queries
@@ -371,12 +374,33 @@ func (pool *TxPool) validateTx(ctx context.Context, tx *types.Transaction) error
 		return core.ErrNegativeValue
 	}
 
-	// Transactor should have enough funds to cover the costs
-	// cost == V + GP * GL
-	if b := currentState.GetBalance(from); b.Cmp(tx.Cost()) < 0 {
-		return core.ErrInsufficientFunds
-	}
+	if tx.GasLimit() == 0 {
+		err, _, contractGas := syscon.ValidatePayByContract(currentState, from, tx)
 
+		if err != nil {
+			return err
+		}
+
+		cost := new(big.Int).Mul(tx.GasPrice(), new(big.Int).SetUint64(contractGas))
+		creator := syscon.CreatorOrSelf(currentState, tx.To())
+
+		// 合约是否有足够额度扣gas费用
+		if currentState.GetBalance(creator).Cmp(cost) < 0 {
+			return core.ErrContractInsufficientFunds
+		}
+		// Transactor should have enough funds to cover the costs
+		if currentState.GetBalance(from).Cmp(tx.Value()) < 0 {
+			return core.ErrInsufficientFunds
+		}
+
+		tx.ContractGas = contractGas
+	} else {
+		// Transactor should have enough funds to cover the costs
+		// cost == V + GP * GL
+		if currentState.GetBalance(from).Cmp(tx.Cost()) < 0 {
+			return core.ErrInsufficientFunds
+		}
+	}
 	// Should supply enough intrinsic gas
 	gas, err := core.IntrinsicGas(tx.Data(), tx.To() == nil, pool.homestead)
 	if err != nil {
@@ -483,6 +507,13 @@ func (self *TxPool) GetTransactions() (txs types.Transactions, err error) {
 		i++
 	}
 	return txs, nil
+}
+
+func (self *TxPool) PendingCount() int {
+	self.mu.RLock()
+	defer self.mu.RUnlock()
+
+	return len(self.pending)
 }
 
 // Content retrieves the data content of the transaction pool, returning all the

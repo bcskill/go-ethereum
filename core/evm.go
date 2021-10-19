@@ -19,6 +19,8 @@ package core
 import (
 	"math/big"
 
+	"github.com/ethereum/go-ethereum/crypto/ed25519"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -40,11 +42,11 @@ func NewEVMContext(msg Message, header *types.Header, chain ChainContext, author
 	// If we don't have an explicit author (i.e. not mining), extract from the header
 	var beneficiary common.Address
 	if author == nil {
-		beneficiary, _ = chain.Engine().Author(header) // Ignore error, we're past header validation
+		beneficiary = chain.Engine().Coinbase(header)
 	} else {
 		beneficiary = *author
 	}
-	return vm.Context{
+	ctx := vm.Context{
 		CanTransfer: CanTransfer,
 		Transfer:    Transfer,
 		GetHash:     GetHashFn(header, chain),
@@ -55,7 +57,10 @@ func NewEVMContext(msg Message, header *types.Header, chain ChainContext, author
 		Difficulty:  new(big.Int).Set(header.Difficulty),
 		GasLimit:    header.GasLimit,
 		GasPrice:    new(big.Int).Set(msg.GasPrice()),
+		TxHash:      msg.Hash(),
 	}
+	ctx.GetSeed = GetSeedFn(header, chain)
+	return ctx
 }
 
 // GetHashFn returns a GetHashFunc which retrieves header hashes by number
@@ -81,6 +86,39 @@ func GetHashFn(ref *types.Header, chain ChainContext) func(n uint64) common.Hash
 			}
 		}
 		return common.Hash{}
+	}
+}
+func GetSeedFn(ref *types.Header, chain ChainContext) func(n uint64) (ed25519.VrfOutput256, uint) {
+	var cache map[uint64]ed25519.VrfOutput256
+	var counter uint
+
+	return func(n uint64) (seed ed25519.VrfOutput256, num uint) {
+		counter++
+		num = counter
+
+		const maxHistory = 2049
+		if current := ref.Number.Uint64(); n < current-maxHistory || n > current {
+			return
+		}
+
+		if cache == nil {
+			cache = map[uint64]ed25519.VrfOutput256{
+				ref.Number.Uint64(): ref.Seed(),
+			}
+		}
+		var ok bool
+		if seed, ok = cache[n]; ok {
+			return
+		}
+		for header := chain.GetHeader(ref.ParentHash, ref.Number.Uint64()-1); header != nil; header = chain.GetHeader(header.ParentHash, header.Number.Uint64()-1) {
+			cache[header.Number.Uint64()] = header.Seed()
+			if n == header.Number.Uint64() {
+				seed = header.Seed()
+				return
+			}
+		}
+
+		return
 	}
 }
 

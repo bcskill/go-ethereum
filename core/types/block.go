@@ -26,6 +26,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/ethereum/go-ethereum/crypto/ed25519"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -81,8 +83,12 @@ type Header struct {
 	GasUsed     uint64         `json:"gasUsed"          gencodec:"required"`
 	Time        uint64         `json:"timestamp"        gencodec:"required"`
 	Extra       []byte         `json:"extraData"        gencodec:"required"`
-	MixDigest   common.Hash    `json:"mixHash"`
-	Nonce       BlockNonce     `json:"nonce"`
+	MixDigest   common.Hash    `json:"mixHash"` // used as seed in ethereum
+	Nonce       BlockNonce     `json:"nonce"`   // used as consensus version in ethereum
+
+	TotalBalanceOfMiners *big.Int `json:"totalBalanceOfMiners" gencodec:"required"`
+
+	Certificate *Certificate `json:"certificate"` // not included in any Hash
 }
 
 // field type overrides for gencodec
@@ -94,23 +100,88 @@ type headerMarshaling struct {
 	Time       hexutil.Uint64
 	Extra      hexutil.Bytes
 	Hash       common.Hash `json:"hash"` // adds call to Hash() in MarshalJSON
+
+	TotalBalanceOfMiners *hexutil.Big
+}
+
+func (h *Header) SetVersion(version uint64) {
+	h.Nonce = EncodeNonce(version)
+}
+
+func (h *Header) Version() uint64 {
+	return h.Nonce.Uint64()
+}
+
+// MixDigest used as Seed/Seed()
+func (h *Header) Seed() ed25519.VrfOutput256 {
+	return ed25519.VrfOutput256(h.MixDigest)
+}
+
+func (h *Header) SetSeed(seed ed25519.VrfOutput256) {
+	h.MixDigest = common.Hash(seed)
+}
+
+func (h *Header) SetSeedBytes(seed []byte) {
+	copy(h.MixDigest[:], seed)
+}
+
+func (h *Header) SeedBytes() []byte {
+	return h.MixDigest[:]
+}
+
+func (h *Header) Proposer() common.Address {
+	return h.Certificate.Proposer()
+}
+
+func (h *Header) Proof() ed25519.VrfProof {
+	return h.Certificate.Proof()
 }
 
 // Hash returns the block hash of the header, which is simply the keccak256 hash of its
 // RLP encoding.
 func (h *Header) Hash() common.Hash {
-	return rlpHash(h)
+	return rlpHash([]interface{}{
+		h.ParentHash,
+		h.UncleHash,
+		h.Coinbase,
+		h.Root,
+		h.TxHash,
+		h.ReceiptHash,
+		h.Bloom,
+		h.Difficulty,
+		h.Number,
+		h.GasLimit,
+		h.GasUsed,
+		h.Time,
+		h.Extra,
+		h.MixDigest,
+		h.Nonce,
+
+		h.TotalBalanceOfMiners,
+	})
+}
+
+// AlgorandEmptyValue returns the empty value for the height in algorand.
+func (h *Header) AlgorandEmptyValue() common.Hash {
+	return rlpHash([]interface{}{
+		h.ParentHash,
+		h.Number,
+	})
 }
 
 // Size returns the approximate memory used by all internal contents. It is used
 // to approximate and limit the memory consumption of various caches.
 func (h *Header) Size() common.StorageSize {
-	return common.StorageSize(unsafe.Sizeof(*h)) + common.StorageSize(len(h.Extra)+(h.Difficulty.BitLen()+h.Number.BitLen())/8)
+	size := common.StorageSize(unsafe.Sizeof(*h)) +
+		common.StorageSize(len(h.Extra)+(h.Difficulty.BitLen()+h.Number.BitLen())/8) +
+		h.Certificate.Size()
+
+	return size
 }
 
 func rlpHash(x interface{}) (h common.Hash) {
 	hw := sha3.NewLegacyKeccak256()
-	rlp.Encode(hw, x)
+	_ = rlp.Encode(hw, x)
 	hw.Sum(h[:0])
 	return h
 }
@@ -231,6 +302,11 @@ func CopyHeader(h *Header) *Header {
 		cpy.Extra = make([]byte, len(h.Extra))
 		copy(cpy.Extra, h.Extra)
 	}
+
+	if h.Certificate != nil {
+		cpy.Certificate = h.Certificate.Copy()
+	}
+
 	return &cpy
 }
 
@@ -269,6 +345,7 @@ func (b *StorageBlock) DecodeRLP(s *rlp.Stream) error {
 
 func (b *Block) Uncles() []*Header          { return b.uncles }
 func (b *Block) Transactions() Transactions { return b.transactions }
+func (b *Block) TransactionsCount() int     { return len(b.transactions) }
 
 func (b *Block) Transaction(hash common.Hash) *Transaction {
 	for _, transaction := range b.transactions {
@@ -302,14 +379,23 @@ func (b *Block) Header() *Header { return CopyHeader(b.header) }
 // Body returns the non-header content of the block.
 func (b *Block) Body() *Body { return &Body{b.transactions, b.uncles} }
 
+func (b *Block) AlgorandEmptyValue() common.Hash { return b.header.AlgorandEmptyValue() }
+
+func (b *Block) Certificate() *Certificate      { return b.header.Certificate }
+func (b *Block) Seed() ed25519.VrfOutput256     { return b.header.Seed() }
+func (b *Block) SeedProof() ed25519.VrfProof    { return b.header.Certificate.SeedProof() }
+func (b *Block) Proof() ed25519.VrfProof        { return b.header.Proof() }
+func (b *Block) TotalBalanceOfMiners() *big.Int { return b.header.TotalBalanceOfMiners }
+func (b *Block) Proposer() common.Address       { return b.header.Proposer() }
+
 // Size returns the true RLP encoded storage size of the block, either by encoding
-// and returning it, or returning a previsouly cached value.
+// and returning it, or returning a previously cached value.
 func (b *Block) Size() common.StorageSize {
 	if size := b.size.Load(); size != nil {
 		return size.(common.StorageSize)
 	}
 	c := writeCounter(0)
-	rlp.Encode(&c, b)
+	_ = rlp.Encode(&c, b)
 	b.size.Store(common.StorageSize(c))
 	return common.StorageSize(c)
 }
@@ -366,10 +452,10 @@ type Blocks []*Block
 
 type BlockBy func(b1, b2 *Block) bool
 
-func (self BlockBy) Sort(blocks Blocks) {
+func (b BlockBy) Sort(blocks Blocks) {
 	bs := blockSorter{
 		blocks: blocks,
-		by:     self,
+		by:     b,
 	}
 	sort.Sort(bs)
 }
@@ -379,10 +465,10 @@ type blockSorter struct {
 	by     func(b1, b2 *Block) bool
 }
 
-func (self blockSorter) Len() int { return len(self.blocks) }
-func (self blockSorter) Swap(i, j int) {
-	self.blocks[i], self.blocks[j] = self.blocks[j], self.blocks[i]
+func (bs blockSorter) Len() int { return len(bs.blocks) }
+func (bs blockSorter) Swap(i, j int) {
+	bs.blocks[i], bs.blocks[j] = bs.blocks[j], bs.blocks[i]
 }
-func (self blockSorter) Less(i, j int) bool { return self.by(self.blocks[i], self.blocks[j]) }
+func (bs blockSorter) Less(i, j int) bool { return bs.by(bs.blocks[i], bs.blocks[j]) }
 
 func Number(b1, b2 *Block) bool { return b1.header.Number.Cmp(b2.header.Number) < 0 }
