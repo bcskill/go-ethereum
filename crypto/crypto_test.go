@@ -27,8 +27,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/kaleidochain/kaleido/common"
-	"github.com/kaleidochain/kaleido/common/hexutil"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 )
 
 var testAddrHex = "970e8128ab834e8eac17ab8e3812f010678cf791"
